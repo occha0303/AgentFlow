@@ -1,10 +1,19 @@
 package com.agentflow.backend.task.model;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+
+@TableName("agent_task")
 public class AgentTask {
 
+	@TableId(type = IdType.AUTO)
 	private Long id;
 	private String title;
 	private String status;
+
+	public AgentTask() {
+	}
 
 	public AgentTask(Long id, String title, String status) {
 		this.id = id;
