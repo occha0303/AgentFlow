@@ -1,0 +1,30 @@
+# Java / Spring Boot
+target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# Node.js / frontend
+node_modules/
+dist/
+build/
+coverage/
+.npm/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDEs and editors
+.idea/
+*.iml
+.vscode/
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
