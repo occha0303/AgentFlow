@@ -1,6 +1,6 @@
-# CareerPilot
+# AgentFlow
 
-Full-stack AI career automation agent built with Spring Boot, React and browser automation.
+Full-stack AI Agent workflow platform built with Spring Boot, React and distributed task execution.
 
 ## Project structure
 
