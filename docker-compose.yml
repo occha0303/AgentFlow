@@ -17,5 +17,32 @@ services:
       timeout: 5s
       retries: 12
 
+  rocketmq-nameserver:
+    image: apache/rocketmq:5.3.2
+    container_name: agentflow-rocketmq-nameserver
+    command: sh mqnamesrv
+    ports:
+      - "9876:9876"
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.2
+    container_name: agentflow-rocketmq-broker
+    # Docker creates a new named volume as root; the broker must initialize its store there.
+    user: "0:0"
+    depends_on:
+      rocketmq-nameserver:
+        condition: service_started
+    environment:
+      NAMESRV_ADDR: rocketmq-nameserver:9876
+    command: sh mqbroker -n rocketmq-nameserver:9876 -c /home/rocketmq/rocketmq-5.3.2/conf/broker.conf
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+      - "10912:10912"
+    volumes:
+      - ./rocketmq/broker.conf:/home/rocketmq/rocketmq-5.3.2/conf/broker.conf:ro
+      - agentflow-rocketmq-data:/home/rocketmq/store
+
 volumes:
   agentflow-mysql-data:
+  agentflow-rocketmq-data:

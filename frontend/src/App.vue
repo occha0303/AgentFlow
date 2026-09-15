@@ -1,18 +1,44 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createTask, getTasks, runTask } from './api/task'
+import { getRun } from './api/run'
 import type { AgentTask, AgentTaskStatus } from './types/task'
+import type { AgentRunStatus } from './types/run'
 
 const tasks = ref<AgentTask[]>([])
 const title = ref('')
 const loading = ref(false)
 const creating = ref(false)
 const runningTaskId = ref<number | null>(null)
+const pollTimers = new Map<number, number>()
+const runStatusByTaskId = ref<Record<number, AgentRunStatus>>({})
+const activeRunTaskIds = ref<number[]>([])
+
+function isTerminalStatus(status: AgentRunStatus) {
+  return status === 'COMPLETED' || status === 'FAILED'
+}
+
+function isTaskRunActive(taskId: number) {
+  return activeRunTaskIds.value.includes(taskId)
+}
 
 function statusTagType(status: AgentTaskStatus): 'info' | 'warning' | 'success' | 'danger' {
   switch (status) {
     case 'CREATED':
+      return 'info'
+    case 'RUNNING':
+      return 'warning'
+    case 'COMPLETED':
+      return 'success'
+    case 'FAILED':
+      return 'danger'
+  }
+}
+
+function runStatusTagType(status: AgentRunStatus): 'info' | 'warning' | 'success' | 'danger' {
+  switch (status) {
+    case 'QUEUED':
       return 'info'
     case 'RUNNING':
       return 'warning'
@@ -33,6 +59,48 @@ async function loadTasks() {
   } finally {
     loading.value = false
   }
+}
+
+function stopRunPolling(taskId: number, runId: number) {
+  const timer = pollTimers.get(runId)
+
+  if (timer !== undefined) {
+    window.clearInterval(timer)
+    pollTimers.delete(runId)
+  }
+
+  activeRunTaskIds.value = activeRunTaskIds.value.filter((activeTaskId) => activeTaskId !== taskId)
+}
+
+function stopAllTaskPolling() {
+  pollTimers.forEach((timer) => window.clearInterval(timer))
+  pollTimers.clear()
+}
+
+async function pollRunStatus(taskId: number, runId: number) {
+  try {
+    const run = await getRun(runId)
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: run.status }
+
+    if (!isTerminalStatus(run.status)) {
+      return
+    }
+
+    stopRunPolling(taskId, runId)
+
+    if (run.status === 'COMPLETED') {
+      ElMessage.success('任务执行完成。')
+    } else {
+      ElMessage.error(run.errorMessage || '任务执行失败。')
+    }
+  } catch {
+    stopRunPolling(taskId, runId)
+    ElMessage.error('任务状态刷新失败，请刷新任务列表后重试。')
+  }
+}
+
+function startRunPolling(taskId: number, runId: number) {
+  pollTimers.set(runId, window.setInterval(() => void pollRunStatus(taskId, runId), 1000))
 }
 
 async function handleCreateTask() {
@@ -59,19 +127,14 @@ async function handleCreateTask() {
 
 async function handleRunTask(task: AgentTask) {
   runningTaskId.value = task.id
-  task.status = 'RUNNING'
 
   try {
-    const updatedTask = await runTask(task.id)
-    await loadTasks()
-
-    if (updatedTask.status === 'FAILED') {
-      ElMessage.error('任务执行失败。')
-    } else {
-      ElMessage.success('任务执行完成。')
-    }
+    const run = await runTask(task.id)
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [task.id]: run.status }
+    activeRunTaskIds.value = [...activeRunTaskIds.value, task.id]
+    ElMessage.success('执行已入队，正在后台执行。')
+    startRunPolling(task.id, run.runId)
   } catch {
-    await loadTasks()
     ElMessage.error('任务执行失败，请刷新任务列表后重试。')
   } finally {
     runningTaskId.value = null
@@ -79,6 +142,7 @@ async function handleRunTask(task: AgentTask) {
 }
 
 onMounted(loadTasks)
+onUnmounted(stopAllTaskPolling)
 </script>
 
 <template>
@@ -119,13 +183,23 @@ onMounted(loadTasks)
             <el-tag :type="statusTagType(scope.row.status)">{{ scope.row.status }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="Run Status" width="140">
+          <template #default="scope">
+            <el-tag
+              v-if="runStatusByTaskId[scope.row.id]"
+              :type="runStatusTagType(runStatusByTaskId[scope.row.id])"
+            >
+              {{ runStatusByTaskId[scope.row.id] }}
+            </el-tag>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="Actions" width="120">
           <template #default="scope">
             <el-button
-              v-if="scope.row.status === 'CREATED'"
               type="primary"
               size="small"
-              :disabled="runningTaskId !== null"
+              :disabled="runningTaskId !== null || isTaskRunActive(scope.row.id)"
               :loading="runningTaskId === scope.row.id"
               @click="handleRunTask(scope.row)"
             >
