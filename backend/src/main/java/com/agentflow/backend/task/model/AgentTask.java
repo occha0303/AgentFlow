@@ -10,12 +10,12 @@ public class AgentTask {
 	@TableId(type = IdType.AUTO)
 	private Long id;
 	private String title;
-	private String status;
+	private AgentTaskStatus status;
 
 	public AgentTask() {
 	}
 
-	public AgentTask(Long id, String title, String status) {
+	public AgentTask(Long id, String title, AgentTaskStatus status) {
 		this.id = id;
 		this.title = title;
 		this.status = status;
@@ -37,11 +37,11 @@ public class AgentTask {
 		this.title = title;
 	}
 
-	public String getStatus() {
+	public AgentTaskStatus getStatus() {
 		return status;
 	}
 
-	public void setStatus(String status) {
+	public void setStatus(AgentTaskStatus status) {
 		this.status = status;
 	}
 }

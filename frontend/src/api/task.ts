@@ -14,3 +14,8 @@ export async function createTask(title: string): Promise<AgentTask> {
   const response = await apiClient.post<AgentTask>('/api/tasks', { title })
   return response.data
 }
+
+export async function runTask(id: number): Promise<AgentTask> {
+  const response = await apiClient.post<AgentTask>(`/api/tasks/${id}/run`)
+  return response.data
+}

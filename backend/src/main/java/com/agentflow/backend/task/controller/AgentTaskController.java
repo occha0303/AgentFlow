@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -32,5 +33,10 @@ public class AgentTaskController {
 	@PostMapping
 	public AgentTask createTask(@RequestBody Map<String, String> request) {
 		return agentTaskService.createTask(request.get("title"));
+	}
+
+	@PostMapping("/{id}/run")
+	public AgentTask runTask(@PathVariable Long id) {
+		return agentTaskService.runTask(id);
 	}
 }
