@@ -2,9 +2,10 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createTask, getTasks, runTask } from './api/task'
-import { getRun } from './api/run'
+import { getRun, getRunSteps } from './api/run'
 import type { AgentTask, AgentTaskStatus } from './types/task'
 import type { AgentRunStatus } from './types/run'
+import type { AgentStep, AgentStepStatus } from './types/step'
 
 const tasks = ref<AgentTask[]>([])
 const title = ref('')
@@ -14,6 +15,8 @@ const runningTaskId = ref<number | null>(null)
 const pollTimers = new Map<number, number>()
 const runStatusByTaskId = ref<Record<number, AgentRunStatus>>({})
 const activeRunTaskIds = ref<number[]>([])
+const traceRunId = ref<number | null>(null)
+const traceSteps = ref<AgentStep[]>([])
 
 function isTerminalStatus(status: AgentRunStatus) {
   return status === 'COMPLETED' || status === 'FAILED'
@@ -49,6 +52,31 @@ function runStatusTagType(status: AgentRunStatus): 'info' | 'warning' | 'success
   }
 }
 
+function stepStatusTagType(status: AgentStepStatus): 'info' | 'warning' | 'success' | 'danger' {
+  switch (status) {
+    case 'PENDING':
+      return 'info'
+    case 'RUNNING':
+      return 'warning'
+    case 'COMPLETED':
+      return 'success'
+    case 'FAILED':
+      return 'danger'
+  }
+}
+
+function stepMarker(status: AgentStepStatus) {
+  if (status === 'COMPLETED') {
+    return '✓'
+  }
+
+  if (status === 'FAILED') {
+    return '✕'
+  }
+
+  return '●'
+}
+
 async function loadTasks() {
   loading.value = true
 
@@ -79,8 +107,12 @@ function stopAllTaskPolling() {
 
 async function pollRunStatus(taskId: number, runId: number) {
   try {
-    const run = await getRun(runId)
+    const [run, steps] = await Promise.all([getRun(runId), getRunSteps(runId)])
     runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: run.status }
+
+    if (traceRunId.value === runId) {
+      traceSteps.value = steps
+    }
 
     if (!isTerminalStatus(run.status)) {
       return
@@ -132,6 +164,8 @@ async function handleRunTask(task: AgentTask) {
     const run = await runTask(task.id)
     runStatusByTaskId.value = { ...runStatusByTaskId.value, [task.id]: run.status }
     activeRunTaskIds.value = [...activeRunTaskIds.value, task.id]
+    traceRunId.value = run.runId
+    traceSteps.value = []
     ElMessage.success('执行已入队，正在后台执行。')
     startRunPolling(task.id, run.runId)
   } catch {
@@ -208,6 +242,22 @@ onUnmounted(stopAllTaskPolling)
           </template>
         </el-table-column>
       </el-table>
+    </el-card>
+
+    <el-card v-if="traceRunId !== null" class="task-section" shadow="never">
+      <template #header>
+        <h2>Execution Trace · Run #{{ traceRunId }}</h2>
+      </template>
+
+      <p v-if="traceSteps.length === 0" class="trace-empty">等待 Consumer 创建执行步骤…</p>
+      <ul v-else class="trace-list">
+        <li v-for="step in traceSteps" :key="step.id" class="trace-item">
+          <span class="trace-marker">{{ stepMarker(step.status) }}</span>
+          <strong>{{ step.stepOrder }}. {{ step.stepType }}</strong>
+          <el-tag :type="stepStatusTagType(step.status)" size="small">{{ step.status }}</el-tag>
+          <p v-if="step.errorMessage" class="trace-error">Error: {{ step.errorMessage }}</p>
+        </li>
+      </ul>
     </el-card>
   </main>
 </template>

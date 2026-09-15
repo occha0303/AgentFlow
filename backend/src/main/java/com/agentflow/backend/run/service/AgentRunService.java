@@ -1,6 +1,7 @@
 package com.agentflow.backend.run.service;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Locale;
 
 import org.slf4j.Logger;
@@ -14,6 +15,8 @@ import com.agentflow.backend.run.mapper.AgentRunMapper;
 import com.agentflow.backend.run.messaging.AgentRunExecutionProducer;
 import com.agentflow.backend.run.model.AgentRun;
 import com.agentflow.backend.run.model.AgentRunStatus;
+import com.agentflow.backend.step.model.AgentStep;
+import com.agentflow.backend.step.service.AgentStepService;
 import com.agentflow.backend.task.mapper.AgentTaskMapper;
 import com.agentflow.backend.task.model.AgentTask;
 
@@ -25,12 +28,14 @@ public class AgentRunService {
 	private final AgentTaskMapper agentTaskMapper;
 	private final AgentRunMapper agentRunMapper;
 	private final AgentRunExecutionProducer agentRunExecutionProducer;
+	private final AgentStepService agentStepService;
 
 	public AgentRunService(AgentTaskMapper agentTaskMapper, AgentRunMapper agentRunMapper,
-			AgentRunExecutionProducer agentRunExecutionProducer) {
+			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService) {
 		this.agentTaskMapper = agentTaskMapper;
 		this.agentRunMapper = agentRunMapper;
 		this.agentRunExecutionProducer = agentRunExecutionProducer;
+		this.agentStepService = agentStepService;
 	}
 
 	public AgentRun requestRun(Long taskId) {
@@ -53,6 +58,11 @@ public class AgentRunService {
 		}
 
 		return run;
+	}
+
+	public List<AgentStep> getSteps(Long runId) {
+		getRun(runId);
+		return agentStepService.getStepsForRun(runId);
 	}
 
 	public AgentRun getRun(Long runId) {
@@ -101,26 +111,46 @@ public class AgentRunService {
 			return;
 		}
 
-		AgentTask task = agentTaskMapper.selectById(run.getTaskId());
-
-		if (task == null) {
-			finishRun(runId, AgentRunStatus.FAILED, "The related task no longer exists");
-			return;
-		}
-
+		AgentStep currentStep = null;
 		try {
+			AgentTask task = agentTaskMapper.selectById(run.getTaskId());
+
+			if (task == null) {
+				currentStep = agentStepService.startStep(runId, 1, "PLAN", "Load the related task");
+				String errorMessage = "The related task no longer exists";
+				agentStepService.failStep(currentStep.getId(), errorMessage);
+				finishRun(runId, AgentRunStatus.FAILED, errorMessage);
+				return;
+			}
+
+			currentStep = agentStepService.startStep(runId, 1, "PLAN", "Prepare the execution plan");
+			Thread.sleep(300);
+			agentStepService.completeStep(currentStep.getId(), "Execution plan prepared");
+
+			currentStep = agentStepService.startStep(runId, 2, "EXECUTE", task.getTitle());
 			Thread.sleep(3000);
+
+			if (task.getTitle().toLowerCase(Locale.ROOT).contains("fail")) {
+				String errorMessage = "Task title contains 'fail'";
+				agentStepService.failStep(currentStep.getId(), errorMessage);
+				finishRun(runId, AgentRunStatus.FAILED, errorMessage);
+				return;
+			}
+
+			agentStepService.completeStep(currentStep.getId(), "Simulated task execution completed");
+
+			currentStep = agentStepService.startStep(runId, 3, "FINALIZE", "Finalize the execution result");
+			Thread.sleep(300);
+			agentStepService.completeStep(currentStep.getId(), "Execution result finalized");
+			finishRun(runId, AgentRunStatus.COMPLETED, null);
 		} catch (InterruptedException exception) {
 			Thread.currentThread().interrupt();
 			logger.warn("Agent run {} was interrupted", runId, exception);
-			finishRun(runId, AgentRunStatus.FAILED, "Agent run was interrupted");
-			return;
-		}
-
-		if (task.getTitle().toLowerCase(Locale.ROOT).contains("fail")) {
-			finishRun(runId, AgentRunStatus.FAILED, "Task title contains 'fail'");
-		} else {
-			finishRun(runId, AgentRunStatus.COMPLETED, null);
+			String errorMessage = "Agent run was interrupted";
+			if (currentStep != null) {
+				agentStepService.failStep(currentStep.getId(), errorMessage);
+			}
+			finishRun(runId, AgentRunStatus.FAILED, errorMessage);
 		}
 	}
 
