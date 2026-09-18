@@ -17,6 +17,9 @@ const runStatusByTaskId = ref<Record<number, AgentRunStatus>>({})
 const activeRunTaskIds = ref<number[]>([])
 const traceRunId = ref<number | null>(null)
 const traceSteps = ref<AgentStep[]>([])
+const traceRunStatus = ref<AgentRunStatus | null>(null)
+const traceResultText = ref<string | null>(null)
+const traceErrorMessage = ref<string | null>(null)
 
 function isTerminalStatus(status: AgentRunStatus) {
   return status === 'COMPLETED' || status === 'FAILED'
@@ -112,6 +115,9 @@ async function pollRunStatus(taskId: number, runId: number) {
 
     if (traceRunId.value === runId) {
       traceSteps.value = steps
+      traceRunStatus.value = run.status
+      traceResultText.value = run.resultText
+      traceErrorMessage.value = run.errorMessage
     }
 
     if (!isTerminalStatus(run.status)) {
@@ -166,6 +172,9 @@ async function handleRunTask(task: AgentTask) {
     activeRunTaskIds.value = [...activeRunTaskIds.value, task.id]
     traceRunId.value = run.runId
     traceSteps.value = []
+    traceRunStatus.value = run.status
+    traceResultText.value = run.resultText
+    traceErrorMessage.value = run.errorMessage
     ElMessage.success('执行已入队，正在后台执行。')
     startRunPolling(task.id, run.runId)
   } catch {
@@ -258,6 +267,19 @@ onUnmounted(stopAllTaskPolling)
           <p v-if="step.errorMessage" class="trace-error">Error: {{ step.errorMessage }}</p>
         </li>
       </ul>
+
+      <section class="result-section">
+        <h3>Result</h3>
+        <p v-if="traceRunStatus === 'QUEUED' || traceRunStatus === 'RUNNING'" class="trace-empty">
+          Agent is working...
+        </p>
+        <p v-else-if="traceRunStatus === 'COMPLETED'" class="result-text">
+          {{ traceResultText || 'LLM returned no content.' }}
+        </p>
+        <p v-else-if="traceRunStatus === 'FAILED'" class="trace-error">
+          {{ traceErrorMessage || 'LLM request failed.' }}
+        </p>
+      </section>
     </el-card>
   </main>
 </template>

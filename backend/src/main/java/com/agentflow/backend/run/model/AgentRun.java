@@ -13,6 +13,7 @@ public class AgentRun {
 	private Long runId;
 	private Long taskId;
 	private AgentRunStatus status;
+	private String resultText;
 	private String errorMessage;
 	private LocalDateTime createdAt;
 	private LocalDateTime startedAt;
@@ -43,6 +44,14 @@ public class AgentRun {
 
 	public void setStatus(AgentRunStatus status) {
 		this.status = status;
+	}
+
+	public String getResultText() {
+		return resultText;
+	}
+
+	public void setResultText(String resultText) {
+		this.resultText = resultText;
 	}
 
 	public String getErrorMessage() {

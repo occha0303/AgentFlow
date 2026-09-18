@@ -2,7 +2,6 @@ package com.agentflow.backend.run.service;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.agentflow.backend.ai.service.AgentAiService;
 import com.agentflow.backend.run.mapper.AgentRunMapper;
 import com.agentflow.backend.run.messaging.AgentRunExecutionProducer;
 import com.agentflow.backend.run.model.AgentRun;
@@ -29,13 +29,16 @@ public class AgentRunService {
 	private final AgentRunMapper agentRunMapper;
 	private final AgentRunExecutionProducer agentRunExecutionProducer;
 	private final AgentStepService agentStepService;
+	private final AgentAiService agentAiService;
 
 	public AgentRunService(AgentTaskMapper agentTaskMapper, AgentRunMapper agentRunMapper,
-			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService) {
+			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService,
+			AgentAiService agentAiService) {
 		this.agentTaskMapper = agentTaskMapper;
 		this.agentRunMapper = agentRunMapper;
 		this.agentRunExecutionProducer = agentRunExecutionProducer;
 		this.agentStepService = agentStepService;
+		this.agentAiService = agentAiService;
 	}
 
 	public AgentRun requestRun(Long taskId) {
@@ -123,30 +126,33 @@ public class AgentRunService {
 				return;
 			}
 
-			currentStep = agentStepService.startStep(runId, 1, "PLAN", "Prepare the execution plan");
+			currentStep = agentStepService.startStep(runId, 1, "PLAN", task.getTitle());
 			Thread.sleep(300);
-			agentStepService.completeStep(currentStep.getId(), "Execution plan prepared");
+			agentStepService.completeStep(currentStep.getId(), "Prepare LLM execution");
 
 			currentStep = agentStepService.startStep(runId, 2, "EXECUTE", task.getTitle());
-			Thread.sleep(3000);
-
-			if (task.getTitle().toLowerCase(Locale.ROOT).contains("fail")) {
-				String errorMessage = "Task title contains 'fail'";
-				agentStepService.failStep(currentStep.getId(), errorMessage);
-				finishRun(runId, AgentRunStatus.FAILED, errorMessage);
-				return;
+			String resultText = agentAiService.execute(task.getTitle());
+			if (resultText == null || resultText.isBlank()) {
+				throw new IllegalStateException("LLM returned an empty response");
 			}
+			agentStepService.completeStep(currentStep.getId(), createOutputSummary(resultText));
 
-			agentStepService.completeStep(currentStep.getId(), "Simulated task execution completed");
-
-			currentStep = agentStepService.startStep(runId, 3, "FINALIZE", "Finalize the execution result");
+			currentStep = agentStepService.startStep(runId, 3, "FINALIZE", "Persist the LLM result");
 			Thread.sleep(300);
-			agentStepService.completeStep(currentStep.getId(), "Execution result finalized");
-			finishRun(runId, AgentRunStatus.COMPLETED, null);
+			agentStepService.completeStep(currentStep.getId(), "LLM result saved");
+			finishRun(runId, AgentRunStatus.COMPLETED, null, resultText);
 		} catch (InterruptedException exception) {
 			Thread.currentThread().interrupt();
 			logger.warn("Agent run {} was interrupted", runId, exception);
 			String errorMessage = "Agent run was interrupted";
+			if (currentStep != null) {
+				agentStepService.failStep(currentStep.getId(), errorMessage);
+			}
+			finishRun(runId, AgentRunStatus.FAILED, errorMessage);
+		} catch (RuntimeException exception) {
+			String errorMessage = describeAiFailure(exception);
+			logger.warn("LLM execution failed for agent run {}: {}", runId,
+					exception.getClass().getSimpleName());
 			if (currentStep != null) {
 				agentStepService.failStep(currentStep.getId(), errorMessage);
 			}
@@ -164,6 +170,10 @@ public class AgentRunService {
 	}
 
 	private void finishRun(Long runId, AgentRunStatus status, String errorMessage) {
+		finishRun(runId, status, errorMessage, null);
+	}
+
+	private void finishRun(Long runId, AgentRunStatus status, String errorMessage, String resultText) {
 		LambdaUpdateWrapper<AgentRun> updateWrapper = new LambdaUpdateWrapper<AgentRun>()
 				.eq(AgentRun::getRunId, runId)
 				.eq(AgentRun::getStatus, AgentRunStatus.RUNNING)
@@ -173,11 +183,46 @@ public class AgentRunService {
 		if (status == AgentRunStatus.FAILED) {
 			updateWrapper.set(AgentRun::getErrorMessage, errorMessage);
 		}
+		if (status == AgentRunStatus.COMPLETED) {
+			updateWrapper.set(AgentRun::getResultText, resultText);
+		}
 
 		int updatedRows = agentRunMapper.update(null, updateWrapper);
 
 		if (updatedRows == 0) {
 			logger.info("Agent run {} was already finished; final update was ignored", runId);
 		}
+	}
+
+	private String createOutputSummary(String resultText) {
+		String normalizedResult = resultText.trim();
+		if (normalizedResult.length() <= 500) {
+			return normalizedResult;
+		}
+		return normalizedResult.substring(0, 497) + "...";
+	}
+
+	private String describeAiFailure(RuntimeException exception) {
+		String message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase();
+		if (message.contains("401") || message.contains("unauthorized")) {
+			return "LLM authentication failed (401 Unauthorized)";
+		}
+		if (message.contains("429") || message.contains("rate limit")) {
+			return "LLM rate limit reached (429 Too Many Requests)";
+		}
+		if (message.contains("timeout") || message.contains("timed out")) {
+			return "LLM request timed out";
+		}
+		if (message.contains("500") || message.contains("502") || message.contains("503")
+				|| message.contains("504")) {
+			return "LLM service is temporarily unavailable";
+		}
+		if (message.contains("connect") || message.contains("network") || message.contains("unknown host")) {
+			return "LLM network request failed";
+		}
+		if (message.contains("empty response")) {
+			return "LLM returned an empty response";
+		}
+		return "LLM request failed";
 	}
 }

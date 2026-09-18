@@ -8,12 +8,15 @@ CREATE TABLE IF NOT EXISTS agent_run (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     task_id BIGINT NOT NULL,
     status VARCHAR(50) NOT NULL,
+    result_text TEXT,
     error_message VARCHAR(500),
     created_at DATETIME NOT NULL,
     started_at DATETIME,
     finished_at DATETIME,
     INDEX idx_agent_run_task_id (task_id)
 );
+
+ALTER TABLE agent_run ADD COLUMN IF NOT EXISTS result_text TEXT AFTER status;
 
 CREATE TABLE IF NOT EXISTS agent_step (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
