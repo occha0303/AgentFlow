@@ -23,7 +23,17 @@ $env:AI_MODEL = "your-model"
 $env:SEARCH_API_KEY = "your-tavily-api-key"
 # Optional. Defaults to https://api.tavily.com
 $env:SEARCH_API_BASE_URL = "https://api.tavily.com"
+$env:EMBEDDING_BASE_URL = "https://api.openai.com"
+$env:EMBEDDING_API_KEY = "your-embedding-api-key"
+$env:EMBEDDING_MODEL = "text-embedding-3-small"
 ```
 
 The WebSearchTool uses Tavily's public Search REST API. UrlReaderTool reads only public `http` and `https`
 pages; it blocks local and private-network addresses, validates every redirect target, and limits returned text.
+
+## Local RAG configuration
+
+MySQL remains the business database. PGvector stores only document chunks, metadata, and embeddings for the
+knowledge base. Start the local databases with `docker compose up -d`; the default PGvector connection targets
+`jdbc:postgresql://localhost:5432/agentflow_rag`. Configure an embedding-capable OpenAI-compatible provider with
+the `EMBEDDING_*` variables above. A chat endpoint that does not implement embeddings cannot index documents.

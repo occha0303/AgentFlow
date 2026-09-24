@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { uploadKnowledgeFile } from './api/knowledge'
 import { createTask, getTasks, runTask } from './api/task'
 import { getRun, getRunSteps } from './api/run'
 import type { AgentTask, AgentTaskStatus } from './types/task'
@@ -20,6 +21,8 @@ const traceSteps = ref<AgentStep[]>([])
 const traceRunStatus = ref<AgentRunStatus | null>(null)
 const traceResultText = ref<string | null>(null)
 const traceErrorMessage = ref<string | null>(null)
+const uploadingKnowledge = ref(false)
+const knowledgeUploadMessage = ref('')
 
 function isTerminalStatus(status: AgentRunStatus) {
   return status === 'COMPLETED' || status === 'FAILED'
@@ -163,6 +166,27 @@ async function handleCreateTask() {
   }
 }
 
+async function handleKnowledgeFileChange(uploadFile: { raw?: File }) {
+  if (!uploadFile.raw) {
+    ElMessage.error('无法读取所选文件。')
+    return
+  }
+
+  uploadingKnowledge.value = true
+  knowledgeUploadMessage.value = ''
+
+  try {
+    const result = await uploadKnowledgeFile(uploadFile.raw)
+    knowledgeUploadMessage.value = `Uploaded successfully · Indexed ${result.chunkCount} chunks`
+    ElMessage.success(`${result.fileName} 已建立知识库索引。`)
+  } catch (error: unknown) {
+    knowledgeUploadMessage.value = ''
+    ElMessage.error('文件上传或建立索引失败，请检查文件、PGvector 和 Embedding 配置。')
+  } finally {
+    uploadingKnowledge.value = false
+  }
+}
+
 async function handleRunTask(task: AgentTask) {
   runningTaskId.value = task.id
 
@@ -211,6 +235,26 @@ onUnmounted(stopAllTaskPolling)
           Create Task
         </el-button>
       </div>
+    </el-card>
+
+    <el-card class="task-section" shadow="never">
+      <template #header>
+        <h2>Knowledge Base</h2>
+      </template>
+
+      <div class="knowledge-upload">
+        <el-upload
+          accept=".pdf,.docx,.txt,.md,.markdown"
+          :auto-upload="false"
+          :show-file-list="false"
+          :disabled="uploadingKnowledge"
+          :on-change="handleKnowledgeFileChange"
+        >
+          <el-button type="primary" :loading="uploadingKnowledge">Upload File</el-button>
+        </el-upload>
+        <span class="knowledge-hint">PDF, DOCX, TXT, Markdown · max 10 MB</span>
+      </div>
+      <p v-if="knowledgeUploadMessage" class="knowledge-result">{{ knowledgeUploadMessage }}</p>
     </el-card>
 
     <el-card class="task-section" shadow="never">

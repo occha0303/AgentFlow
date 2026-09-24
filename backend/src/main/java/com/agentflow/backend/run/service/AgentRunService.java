@@ -228,7 +228,7 @@ public class AgentRunService {
 			return "CalculatorTool failed: cannot divide by zero";
 		}
 		if (message.startsWith("websearchtool failed:") || message.startsWith("urlreadertool failed:")
-				|| message.contains("urlreadertool blocked unsafe url")) {
+				|| message.startsWith("knowledgesearchtool failed:") || message.contains("urlreadertool blocked unsafe url")) {
 			return exception.getMessage();
 		}
 		if (message.contains("401") || message.contains("unauthorized")) {
