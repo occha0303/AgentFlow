@@ -308,7 +308,12 @@ onUnmounted(stopAllTaskPolling)
           <span class="trace-marker">{{ stepMarker(step.status) }}</span>
           <strong>{{ step.stepOrder }}. {{ step.stepType }}</strong>
           <el-tag :type="stepStatusTagType(step.status)" size="small">{{ step.status }}</el-tag>
-          <p v-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
+          <div v-if="step.stepType === 'BROWSER'" class="browser-trace">
+            <strong>BrowserTool</strong>
+            <p>Visited URL: {{ step.inputSummary }}</p>
+            <p v-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
+          </div>
+          <p v-else-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
           <p v-if="step.errorMessage" class="trace-error">Error: {{ step.errorMessage }}</p>
         </li>
       </ul>

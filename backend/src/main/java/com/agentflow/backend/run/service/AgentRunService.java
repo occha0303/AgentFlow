@@ -12,6 +12,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.agentflow.backend.ai.model.AgentAiExecutionResult;
 import com.agentflow.backend.ai.service.AgentAiService;
+import com.agentflow.backend.ai.trace.AgentToolTraceRecorder;
 import com.agentflow.backend.run.mapper.AgentRunMapper;
 import com.agentflow.backend.run.messaging.AgentRunExecutionProducer;
 import com.agentflow.backend.run.model.AgentRun;
@@ -132,7 +133,8 @@ public class AgentRunService {
 			agentStepService.completeStep(currentStep.getId(), "Prepare LLM execution");
 
 			currentStep = agentStepService.startStep(runId, 2, "EXECUTE", task.getTitle());
-			AgentAiExecutionResult executionResult = agentAiService.execute(task.getTitle());
+			AgentToolTraceRecorder traceRecorder = new AgentToolTraceRecorder(runId, agentStepService, 3);
+			AgentAiExecutionResult executionResult = agentAiService.execute(task.getTitle(), traceRecorder);
 			String resultText = executionResult.resultText();
 			if (resultText == null || resultText.isBlank()) {
 				throw new IllegalStateException("LLM returned an empty response");
@@ -140,7 +142,7 @@ public class AgentRunService {
 			agentStepService.completeStep(currentStep.getId(),
 					createOutputSummary(resultText, executionResult.usedTools(), executionResult.toolUsageDetails()));
 
-			currentStep = agentStepService.startStep(runId, 3, "FINALIZE", "Persist the LLM result");
+			currentStep = agentStepService.startStep(runId, traceRecorder.nextStepOrder(), "FINALIZE", "Persist the LLM result");
 			Thread.sleep(300);
 			agentStepService.completeStep(currentStep.getId(), "LLM result saved");
 			finishRun(runId, AgentRunStatus.COMPLETED, null, resultText);
@@ -228,7 +230,8 @@ public class AgentRunService {
 			return "CalculatorTool failed: cannot divide by zero";
 		}
 		if (message.startsWith("websearchtool failed:") || message.startsWith("urlreadertool failed:")
-				|| message.startsWith("knowledgesearchtool failed:") || message.contains("urlreadertool blocked unsafe url")) {
+				|| message.startsWith("browsertool failed:") || message.startsWith("knowledgesearchtool failed:")
+				|| message.contains("urlreadertool blocked unsafe url") || message.contains("browsertool blocked unsafe url")) {
 			return exception.getMessage();
 		}
 		if (message.contains("401") || message.contains("unauthorized")) {
