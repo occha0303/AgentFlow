@@ -138,7 +138,7 @@ public class AgentRunService {
 				throw new IllegalStateException("LLM returned an empty response");
 			}
 			agentStepService.completeStep(currentStep.getId(),
-					createOutputSummary(resultText, executionResult.usedTools()));
+					createOutputSummary(resultText, executionResult.usedTools(), executionResult.toolUsageDetails()));
 
 			currentStep = agentStepService.startStep(runId, 3, "FINALIZE", "Persist the LLM result");
 			Thread.sleep(300);
@@ -197,21 +197,39 @@ public class AgentRunService {
 		}
 	}
 
-	private String createOutputSummary(String resultText, List<String> usedTools) {
+	private String createOutputSummary(String resultText, List<String> usedTools, List<String> toolUsageDetails) {
 		String toolSummary = usedTools.isEmpty() ? "Tools Used: none. "
 				: "Tools Used: " + String.join(", ", usedTools) + ". ";
-		String normalizedResult = resultText.trim();
-		int resultLimit = 500 - toolSummary.length();
-		if (normalizedResult.length() <= resultLimit) {
-			return toolSummary + normalizedResult;
+		String detailSummary = createDetailSummary(toolUsageDetails, 240);
+		String prefix = toolSummary + detailSummary;
+		if (prefix.length() >= 497) {
+			return prefix.substring(0, 497) + "...";
 		}
-		return toolSummary + normalizedResult.substring(0, resultLimit - 3) + "...";
+		String normalizedResult = resultText.trim();
+		int resultLimit = 500 - prefix.length();
+		if (normalizedResult.length() <= resultLimit) {
+			return prefix + normalizedResult;
+		}
+		return prefix + normalizedResult.substring(0, resultLimit - 3) + "...";
+	}
+
+	private String createDetailSummary(List<String> toolUsageDetails, int limit) {
+		if (toolUsageDetails.isEmpty()) {
+			return "";
+		}
+
+		String details = String.join(" | ", toolUsageDetails) + ". ";
+		return details.length() <= limit ? details : details.substring(0, limit - 3) + "...";
 	}
 
 	private String describeAiFailure(RuntimeException exception) {
 		String message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase();
 		if (message.contains("calculatortool") || message.contains("divide by zero")) {
 			return "CalculatorTool failed: cannot divide by zero";
+		}
+		if (message.startsWith("websearchtool failed:") || message.startsWith("urlreadertool failed:")
+				|| message.contains("urlreadertool blocked unsafe url")) {
+			return exception.getMessage();
 		}
 		if (message.contains("401") || message.contains("unauthorized")) {
 			return "LLM authentication failed (401 Unauthorized)";
