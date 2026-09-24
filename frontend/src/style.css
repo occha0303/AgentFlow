@@ -83,6 +83,13 @@ body {
   color: #dc2626;
 }
 
+.trace-summary {
+  width: 100%;
+  margin: 0 0 0 26px;
+  color: #4b5563;
+  white-space: pre-wrap;
+}
+
 .result-section {
   margin-top: 24px;
   padding-top: 20px;

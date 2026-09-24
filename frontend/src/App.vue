@@ -264,6 +264,7 @@ onUnmounted(stopAllTaskPolling)
           <span class="trace-marker">{{ stepMarker(step.status) }}</span>
           <strong>{{ step.stepOrder }}. {{ step.stepType }}</strong>
           <el-tag :type="stepStatusTagType(step.status)" size="small">{{ step.status }}</el-tag>
+          <p v-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
           <p v-if="step.errorMessage" class="trace-error">Error: {{ step.errorMessage }}</p>
         </li>
       </ul>

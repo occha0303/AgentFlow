@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.agentflow.backend.ai.model.AgentAiExecutionResult;
 import com.agentflow.backend.ai.service.AgentAiService;
 import com.agentflow.backend.run.mapper.AgentRunMapper;
 import com.agentflow.backend.run.messaging.AgentRunExecutionProducer;
@@ -131,11 +132,13 @@ public class AgentRunService {
 			agentStepService.completeStep(currentStep.getId(), "Prepare LLM execution");
 
 			currentStep = agentStepService.startStep(runId, 2, "EXECUTE", task.getTitle());
-			String resultText = agentAiService.execute(task.getTitle());
+			AgentAiExecutionResult executionResult = agentAiService.execute(task.getTitle());
+			String resultText = executionResult.resultText();
 			if (resultText == null || resultText.isBlank()) {
 				throw new IllegalStateException("LLM returned an empty response");
 			}
-			agentStepService.completeStep(currentStep.getId(), createOutputSummary(resultText));
+			agentStepService.completeStep(currentStep.getId(),
+					createOutputSummary(resultText, executionResult.usedTools()));
 
 			currentStep = agentStepService.startStep(runId, 3, "FINALIZE", "Persist the LLM result");
 			Thread.sleep(300);
@@ -194,16 +197,22 @@ public class AgentRunService {
 		}
 	}
 
-	private String createOutputSummary(String resultText) {
+	private String createOutputSummary(String resultText, List<String> usedTools) {
+		String toolSummary = usedTools.isEmpty() ? "Tools Used: none. "
+				: "Tools Used: " + String.join(", ", usedTools) + ". ";
 		String normalizedResult = resultText.trim();
-		if (normalizedResult.length() <= 500) {
-			return normalizedResult;
+		int resultLimit = 500 - toolSummary.length();
+		if (normalizedResult.length() <= resultLimit) {
+			return toolSummary + normalizedResult;
 		}
-		return normalizedResult.substring(0, 497) + "...";
+		return toolSummary + normalizedResult.substring(0, resultLimit - 3) + "...";
 	}
 
 	private String describeAiFailure(RuntimeException exception) {
 		String message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase();
+		if (message.contains("calculatortool") || message.contains("divide by zero")) {
+			return "CalculatorTool failed: cannot divide by zero";
+		}
 		if (message.contains("401") || message.contains("unauthorized")) {
 			return "LLM authentication failed (401 Unauthorized)";
 		}
