@@ -38,10 +38,20 @@ function pendingApproval(): AgentApproval | undefined {
   return traceApprovals.value.find((approval) => approval.status === 'PENDING')
 }
 
-function approvalField(approval: AgentApproval, field: 'target' | 'content'): string {
+function approvalField(approval: AgentApproval, field: 'target' | 'content' | 'url' | 'value' | 'browserAction'): string {
   try {
     const payload = JSON.parse(approval.actionPayload) as Record<string, unknown>
     return typeof payload[field] === 'string' ? payload[field] : ''
+  } catch {
+    return ''
+  }
+}
+
+function browserTarget(approval: AgentApproval): string {
+  try {
+    const payload = JSON.parse(approval.actionPayload) as { target?: { tag?: string; text?: string; ariaLabel?: string; ref?: string } }
+    const target = payload.target
+    return target ? [target.ref, target.tag, target.text || target.ariaLabel].filter(Boolean).join(' · ') : ''
   } catch {
     return ''
   }
@@ -402,6 +412,11 @@ onUnmounted(stopAllTaskPolling)
             <p>Visited URL: {{ step.inputSummary }}</p>
             <p v-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
           </div>
+          <div v-else-if="step.stepType === 'BROWSER_ACTION'" class="browser-trace">
+            <strong>Approved Browser Action</strong>
+            <p>{{ step.inputSummary }}</p>
+            <p v-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
+          </div>
           <p v-else-if="step.outputSummary" class="trace-summary">{{ step.outputSummary }}</p>
           <p v-if="step.errorMessage" class="trace-error">Error: {{ step.errorMessage }}</p>
         </li>
@@ -410,8 +425,16 @@ onUnmounted(stopAllTaskPolling)
       <section v-if="traceRunStatus === 'WAITING_APPROVAL' && pendingApproval()" class="approval-section">
         <h3>Pending Approval</h3>
         <p><strong>Action:</strong> {{ pendingApproval()!.actionSummary }}</p>
-        <p><strong>Target:</strong> {{ approvalField(pendingApproval()!, 'target') }}</p>
-        <p><strong>Content:</strong> {{ approvalField(pendingApproval()!, 'content') }}</p>
+        <template v-if="pendingApproval()!.actionType.startsWith('BROWSER_')">
+          <p><strong>Browser action:</strong> {{ approvalField(pendingApproval()!, 'browserAction') }}</p>
+          <p><strong>Page URL:</strong> {{ approvalField(pendingApproval()!, 'url') }}</p>
+          <p><strong>Target:</strong> {{ browserTarget(pendingApproval()!) }}</p>
+          <p v-if="pendingApproval()!.actionType === 'BROWSER_TYPE'"><strong>Text:</strong> {{ approvalField(pendingApproval()!, 'value') }}</p>
+        </template>
+        <template v-else>
+          <p><strong>Target:</strong> {{ approvalField(pendingApproval()!, 'target') }}</p>
+          <p><strong>Content:</strong> {{ approvalField(pendingApproval()!, 'content') }}</p>
+        </template>
         <el-input v-model="decisionReason" aria-label="Reject reason" placeholder="Reject reason (optional)" />
         <div class="approval-actions">
           <el-button type="primary" :loading="decidingApproval" @click="handleApprove(pendingApproval()!)">Approve</el-button>

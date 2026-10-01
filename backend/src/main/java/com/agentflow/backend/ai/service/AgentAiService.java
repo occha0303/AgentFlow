@@ -9,6 +9,7 @@ import com.agentflow.backend.ai.model.AgentAiExecutionResult;
 import com.agentflow.backend.ai.browser.BrowserService;
 import com.agentflow.backend.ai.trace.AgentToolTraceRecorder;
 import com.agentflow.backend.ai.tool.BrowserTool;
+import com.agentflow.backend.ai.tool.BrowserWriteTool;
 import com.agentflow.backend.ai.tool.CalculatorTool;
 import com.agentflow.backend.ai.tool.CurrentTimeTool;
 import com.agentflow.backend.ai.tool.KnowledgeSearchTool;
@@ -26,6 +27,7 @@ public class AgentAiService {
 
 	private static final Pattern EXPLICIT_WEB_URL = Pattern.compile("(?i)\\bhttps?://\\S+");
 	private static final Pattern MOCK_PUBLISH_TASK = Pattern.compile("(?i)\\bpublish\\b.*\\bdemo platform\\b");
+	private static final Pattern BROWSER_ACTION_TASK = Pattern.compile("(?i)(点击|输入|填写|提交|\\bclick\\b|\\btype\\b|\\bfill\\b|\\bsubmit\\b)");
 
 	private final ChatClient chatClient;
 	private final SearchService searchService;
@@ -47,7 +49,10 @@ public class AgentAiService {
 						+ "always use CurrentTimeTool for current time or date. Use WebSearchTool for latest, current, "
 						+ "recent, or public external facts, and UrlReaderTool only when search snippets are insufficient. "
 						+ "Use BrowserTool only when the user provides a specific public URL or requires rendered page state; "
-						+ "BrowserTool is read-only and cannot click, type, log in, or change data. "
+						+ "BrowserTool only reads a public page and returns numbered element refs. For explicit browser "
+						+ "click, type, or submit requests, first read that URL, then call BrowserWriteTool.prepareBrowserAction "
+						+ "with a ref. This only asks for human approval; never claim an action happened before approval. "
+						+ "Never use browser actions for login, passwords, payment, checkout, deletion, or secrets. "
 						+ "For a request to publish to the demo platform, call MockWriteTool.prepareWriteAction with the exact content. "
 						+ "It only creates a pending approval; never claim that you or the user approved or published it. "
 						+ "Use KnowledgeSearchTool for user-uploaded internal documents; do not use it for public updates. "
@@ -79,6 +84,9 @@ public class AgentAiService {
 		));
 		if (hasExplicitWebUrl(task)) {
 			tools.add(new BrowserTool(browserService, toolUsageRecorder, traceRecorder));
+			if (requiresBrowserApproval(task)) {
+				tools.add(new BrowserWriteTool(browserService, approvalService, traceRecorder));
+			}
 		}
 		if (requiresMockApproval(task)) {
 			tools.add(new MockWriteTool(approvalService, traceRecorder));
@@ -92,5 +100,9 @@ public class AgentAiService {
 
 	public boolean requiresMockApproval(String task) {
 		return task != null && MOCK_PUBLISH_TASK.matcher(task).find();
+	}
+
+	public boolean requiresBrowserApproval(String task) {
+		return hasExplicitWebUrl(task) && BROWSER_ACTION_TASK.matcher(task).find();
 	}
 }

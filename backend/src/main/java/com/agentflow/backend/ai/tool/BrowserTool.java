@@ -3,7 +3,7 @@ package com.agentflow.backend.ai.tool;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
-import com.agentflow.backend.ai.browser.BrowserPage;
+import com.agentflow.backend.ai.browser.BrowserPageSnapshot;
 import com.agentflow.backend.ai.browser.BrowserService;
 import com.agentflow.backend.ai.trace.AgentToolTraceRecorder;
 import com.agentflow.backend.step.model.AgentStep;
@@ -21,16 +21,18 @@ public class BrowserTool {
 		this.traceRecorder = traceRecorder;
 	}
 
-	@Tool(description = "Open and read one specific public HTTP or HTTPS web page in a read-only browser. "
+	@Tool(description = "Open and read one specific public HTTP or HTTPS web page in a fresh browser. "
 			+ "Use it only when a task explicitly gives a URL or needs rendered page state. "
+			+ "Returns a short page summary and up to 40 visible interactive elements with short-lived refs. "
 			+ "It cannot log in, click, type, submit forms, download files, or modify data. "
 			+ "Never use it for localhost, private addresses, files, or non-web protocols.")
-	public BrowserPage openWebPage(@ToolParam(description = "A specific public http or https URL to open") String url) {
+	public BrowserPageSnapshot openWebPage(@ToolParam(description = "A specific public http or https URL to open") String url) {
 		AgentStep browserStep = traceRecorder.startBrowserStep(url);
 		try {
-			BrowserPage page = browserService.open(url);
-			String title = browserService.getTitle(page);
-			String content = browserService.getText(page);
+			BrowserPageSnapshot page = browserService.open(url);
+			traceRecorder.rememberBrowserSnapshot(url, page);
+			String title = page.title();
+			String content = page.contentSummary();
 			toolUsageRecorder.record("BrowserTool");
 			toolUsageRecorder.recordDetail("Visited URL: " + abbreviate(page.url(), 180));
 			toolUsageRecorder.recordDetail("Page title: " + abbreviate(title, 120));

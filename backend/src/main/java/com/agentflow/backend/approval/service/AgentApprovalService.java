@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.agentflow.backend.approval.mapper.AgentApprovalMapper;
+import com.agentflow.backend.ai.browser.BrowserActionPayload;
 import com.agentflow.backend.approval.model.AgentApproval;
 import com.agentflow.backend.approval.model.AgentApprovalStatus;
 import com.agentflow.backend.run.mapper.AgentRunMapper;
@@ -48,23 +49,38 @@ public class AgentApprovalService {
 		if (content == null || content.isBlank() || content.length() > 10_000) {
 			throw new IllegalArgumentException("MockWriteTool content must contain 1 to 10000 characters");
 		}
+		return prepareAction(runId, stepOrder, "PUBLISH", "Publish content to demo platform",
+				Map.of("target", "demo platform", "content", content));
+	}
+
+	@Transactional
+	public AgentApproval prepareBrowserAction(Long runId, int stepOrder, BrowserActionPayload payload) {
+		String actionType = "BROWSER_" + payload.browserAction().name();
+		String summary = payload.browserAction().name() + " " + payload.target().tag()
+				+ " " + shorten(payload.target().text().isBlank() ? payload.target().ariaLabel()
+						: payload.target().text(), 80) + " on " + shorten(payload.url(), 180);
+		return prepareAction(runId, stepOrder, actionType, summary, payload);
+	}
+
+	private AgentApproval prepareAction(Long runId, int stepOrder, String actionType,
+			String summary, Object payload) {
 		AgentRun run = runMapper.selectById(runId);
 		if (run == null || run.getStatus() != AgentRunStatus.RUNNING || !getApprovalsForRun(runId).isEmpty()) {
-			throw new IllegalStateException("MockWriteTool cannot prepare another action for this run");
+			throw new IllegalStateException("Cannot prepare another action for this run");
 		}
 		AgentStep executeStep = stepService.getStepsForRun(runId).stream()
 				.filter(step -> "EXECUTE".equals(step.getStepType()))
 				.findFirst()
 				.orElseThrow(() -> new IllegalStateException("EXECUTE step does not exist"));
 
-		AgentStep approvalStep = stepService.startStep(runId, stepOrder, "APPROVAL", "Publish content to demo platform");
+		AgentStep approvalStep = stepService.startStep(runId, stepOrder, "APPROVAL", summary);
 		AgentApproval approval = new AgentApproval();
 		approval.setRunId(runId);
 		approval.setStepId(approvalStep.getId());
-		approval.setActionType("PUBLISH");
-		approval.setActionSummary("Publish content to demo platform");
+		approval.setActionType(actionType);
+		approval.setActionSummary(summary);
 		try {
-			approval.setActionPayload(objectMapper.writeValueAsString(Map.of("target", "demo platform", "content", content)));
+			approval.setActionPayload(objectMapper.writeValueAsString(payload));
 		} catch (JsonProcessingException exception) {
 			throw new IllegalStateException("Could not prepare action payload", exception);
 		}

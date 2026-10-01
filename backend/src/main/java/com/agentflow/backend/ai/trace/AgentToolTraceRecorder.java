@@ -1,5 +1,6 @@
 package com.agentflow.backend.ai.trace;
 
+import com.agentflow.backend.ai.browser.BrowserPageSnapshot;
 import com.agentflow.backend.step.model.AgentStep;
 import com.agentflow.backend.step.service.AgentStepService;
 
@@ -13,6 +14,8 @@ public class AgentToolTraceRecorder {
 	private final AgentStepService agentStepService;
 	private int nextStepOrder;
 	private boolean approvalPrepared;
+	private BrowserPageSnapshot browserSnapshot;
+	private String browserRequestedUrl;
 
 	public AgentToolTraceRecorder(Long runId, AgentStepService agentStepService, int firstStepOrder) {
 		this.runId = runId;
@@ -50,6 +53,19 @@ public class AgentToolTraceRecorder {
 
 	public boolean approvalPrepared() {
 		return approvalPrepared;
+	}
+
+	public void rememberBrowserSnapshot(String requestedUrl, BrowserPageSnapshot snapshot) {
+		this.browserRequestedUrl = requestedUrl;
+		this.browserSnapshot = snapshot;
+	}
+
+	public BrowserPageSnapshot browserSnapshotFor(String url) {
+		if (browserSnapshot == null || (!browserSnapshot.url().equals(url)
+				&& !browserRequestedUrl.equals(url))) {
+			throw new IllegalArgumentException("Browser action requires reading this URL first");
+		}
+		return browserSnapshot;
 	}
 
 	private String abbreviate(String value, int limit) {

@@ -11,6 +11,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.agentflow.backend.ai.model.AgentAiExecutionResult;
+import com.agentflow.backend.ai.browser.BrowserActionResult;
+import com.agentflow.backend.ai.browser.BrowserWriteService;
 import com.agentflow.backend.ai.service.AgentAiService;
 import com.agentflow.backend.ai.trace.AgentToolTraceRecorder;
 import com.agentflow.backend.approval.model.AgentApproval;
@@ -38,10 +40,12 @@ public class AgentRunService {
 	private final AgentAiService agentAiService;
 	private final AgentApprovalService approvalService;
 	private final MockWriteService mockWriteService;
+	private final BrowserWriteService browserWriteService;
 
 	public AgentRunService(AgentTaskMapper agentTaskMapper, AgentRunMapper agentRunMapper,
 			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService,
-			AgentAiService agentAiService, AgentApprovalService approvalService, MockWriteService mockWriteService) {
+			AgentAiService agentAiService, AgentApprovalService approvalService, MockWriteService mockWriteService,
+			BrowserWriteService browserWriteService) {
 		this.agentTaskMapper = agentTaskMapper;
 		this.agentRunMapper = agentRunMapper;
 		this.agentRunExecutionProducer = agentRunExecutionProducer;
@@ -49,6 +53,7 @@ public class AgentRunService {
 		this.agentAiService = agentAiService;
 		this.approvalService = approvalService;
 		this.mockWriteService = mockWriteService;
+		this.browserWriteService = browserWriteService;
 	}
 
 	public AgentRun requestRun(Long taskId) {
@@ -155,6 +160,9 @@ public class AgentRunService {
 			if (agentAiService.requiresMockApproval(task.getTitle())) {
 				throw new IllegalStateException("Mock publication requires approval preparation");
 			}
+			if (agentAiService.requiresBrowserApproval(task.getTitle())) {
+				throw new IllegalStateException("Browser action requires approval preparation");
+			}
 			String resultText = executionResult.resultText();
 			if (resultText == null || resultText.isBlank()) {
 				throw new IllegalStateException("LLM returned an empty response");
@@ -217,20 +225,33 @@ public class AgentRunService {
 					.orElseThrow(() -> new IllegalStateException("EXECUTE step does not exist"));
 			agentStepService.completeWaitingStep(approvalStep.getId(), "Approved by user");
 			agentStepService.completeWaitingStep(executeStep.getId(), "Approved action prepared");
+			boolean browserAction = approval.getActionType().startsWith("BROWSER_");
 			currentStep = agentStepService.startStep(runId, approvalStep.getStepOrder() + 1,
-					"WRITE ACTION", approval.getActionSummary());
-			String result = mockWriteService.executeApprovedAction(approval.getId(), runId);
-			agentStepService.completeStep(currentStep.getId(), "Mock publication completed on demo platform");
+					browserAction ? "BROWSER_ACTION" : "WRITE ACTION", approval.getActionSummary());
+			String result;
+			if (browserAction) {
+				BrowserActionResult browserResult = browserWriteService.executeApprovedBrowserAction(approval.getId(), runId);
+				result = "Browser action completed at " + browserResult.url() + " (" + browserResult.title() + ")";
+				String summary = "URL: " + browserResult.url() + " | Title: " + browserResult.title()
+						+ " | Result: " + browserResult.contentSummary();
+				agentStepService.completeStep(currentStep.getId(), summary.substring(0, Math.min(500, summary.length())));
+			} else {
+				result = mockWriteService.executeApprovedAction(approval.getId(), runId);
+				agentStepService.completeStep(currentStep.getId(), "Mock publication completed on demo platform");
+			}
 			currentStep = agentStepService.startStep(runId, approvalStep.getStepOrder() + 2,
 					"FINALIZE", "Persist approved action result");
 			agentStepService.completeStep(currentStep.getId(), "Approved action result saved");
 			finishRun(runId, AgentRunStatus.COMPLETED, null, result);
 		} catch (RuntimeException exception) {
 			logger.warn("Approved action failed for run {}: {}", runId, exception.getClass().getSimpleName());
+			String reason = exception.getMessage() == null ? "Approved action failed"
+					: exception.getMessage();
+			if (reason.length() > 500) reason = reason.substring(0, 497) + "...";
 			if (currentStep != null) {
-				agentStepService.failStep(currentStep.getId(), "Approved action failed");
+				agentStepService.failStep(currentStep.getId(), reason);
 			}
-			finishRun(runId, AgentRunStatus.FAILED, "Approved action failed");
+			finishRun(runId, AgentRunStatus.FAILED, reason);
 		}
 	}
 
