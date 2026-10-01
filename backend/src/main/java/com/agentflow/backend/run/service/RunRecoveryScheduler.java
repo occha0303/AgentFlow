@@ -29,11 +29,13 @@ public class RunRecoveryScheduler {
 	private final AgentRunMapper runMapper;
 	private final AgentStepService stepService;
 	private final RunExecutionLockService lockService;
+	private final RunEventPublisher events;
 	private final long staleSeconds;
 	private final TransactionTemplate transactionTemplate;
 
 	public RunRecoveryScheduler(AgentRunMapper runMapper, AgentStepService stepService,
-			RunExecutionLockService lockService, PlatformTransactionManager transactionManager,
+			RunExecutionLockService lockService, RunEventPublisher events,
+			PlatformTransactionManager transactionManager,
 			@Value("${agent.run.stale-seconds:600}") long staleSeconds) {
 		if (staleSeconds < 30) {
 			throw new IllegalArgumentException("Agent run stale threshold must be at least 30 seconds");
@@ -41,6 +43,7 @@ public class RunRecoveryScheduler {
 		this.runMapper = runMapper;
 		this.stepService = stepService;
 		this.lockService = lockService;
+		this.events = events;
 		this.staleSeconds = staleSeconds;
 		this.transactionTemplate = new TransactionTemplate(transactionManager);
 	}
@@ -77,6 +80,9 @@ public class RunRecoveryScheduler {
 				});
 				if (Boolean.TRUE.equals(recovered)) {
 					logger.warn("Stale run {} recovered as FAILED", run.getRunId());
+					AgentRun failed = runMapper.selectById(run.getRunId());
+					events.runStatus(failed);
+					events.resultReady(failed);
 				}
 			} catch (RuntimeException exception) {
 				logger.warn("Could not recover stale run {}", run.getRunId(), exception);

@@ -17,6 +17,7 @@ import com.agentflow.backend.run.mapper.AgentRunMapper;
 import com.agentflow.backend.run.messaging.AgentRunExecutionProducer;
 import com.agentflow.backend.run.model.AgentRun;
 import com.agentflow.backend.run.model.AgentRunStatus;
+import com.agentflow.backend.run.service.RunEventPublisher;
 import com.agentflow.backend.step.model.AgentStep;
 import com.agentflow.backend.step.service.AgentStepService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -31,14 +32,16 @@ public class AgentApprovalService {
 	private final AgentRunMapper runMapper;
 	private final AgentStepService stepService;
 	private final AgentRunExecutionProducer producer;
+	private final RunEventPublisher events;
 	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	public AgentApprovalService(AgentApprovalMapper approvalMapper, AgentRunMapper runMapper,
-			AgentStepService stepService, AgentRunExecutionProducer producer) {
+			AgentStepService stepService, AgentRunExecutionProducer producer, RunEventPublisher events) {
 		this.approvalMapper = approvalMapper;
 		this.runMapper = runMapper;
 		this.stepService = stepService;
 		this.producer = producer;
+		this.events = events;
 	}
 
 	@Transactional
@@ -96,6 +99,8 @@ public class AgentApprovalService {
 		if (updated != 1) {
 			throw new IllegalStateException("Run changed while preparing approval");
 		}
+		events.approvalUpdate(approval);
+		events.runStatus(runMapper.selectById(runId));
 		return approval;
 	}
 
@@ -141,7 +146,9 @@ public class AgentApprovalService {
 			throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
 					"Could not queue approval resume; please try again", exception);
 		}
-		return getApproval(approvalId);
+		AgentApproval decided = getApproval(approvalId);
+		events.approvalUpdate(decided);
+		return decided;
 	}
 
 	@Transactional
@@ -175,7 +182,12 @@ public class AgentApprovalService {
 		if (runUpdated != 1) {
 			throw new ResponseStatusException(HttpStatus.CONFLICT, "Run changed during rejection");
 		}
-		return getApproval(approvalId);
+		AgentApproval decided = getApproval(approvalId);
+		events.approvalUpdate(decided);
+		AgentRun failed = runMapper.selectById(approval.getRunId());
+		events.runStatus(failed);
+		events.resultReady(failed);
+		return decided;
 	}
 
 	private String shorten(String text, int limit) {

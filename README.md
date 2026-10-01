@@ -51,3 +51,24 @@ every 60 seconds, but never times out `WAITING_APPROVAL`.
 `retryOfRunId`, and returns HTTP 202. The old run and its approvals remain unchanged; any
 new side-effect proposal requires a new approval. A timeout is not automatically retried
 because an external browser action may have succeeded just before the worker stopped.
+
+## Run live updates (SSE v1)
+
+`GET /api/runs/{runId}/events` streams a database-backed `snapshot` followed by
+`run-status`, `step-update`, `approval-update`, `result-ready`, and `error` events.
+The Vue page uses `EventSource`; after repeated connection failures, it falls back
+to GET requests every five seconds until the SSE connection recovers. Existing GET
+endpoints remain available. Browser action payloads are not sent over SSE; the UI
+fetches approval details only when an approval event or snapshot requires them.
+
+Manual QA when Java 21, MySQL, RocketMQ, Redis, PGvector and AI credentials are available:
+
+1. Run a normal LLM task: observe QUEUED, RUNNING, Step updates and COMPLETED without one-second polling.
+2. Prepare a browser write: observe WAITING_APPROVAL and the approval card; approve and observe BROWSER_ACTION and COMPLETED.
+3. Reject an approval: observe FAILED and the final error immediately.
+4. Disconnect/reconnect the browser network: observe Reconnecting, low-frequency fallback, then a snapshot restoring the stored state.
+5. Retry a FAILED run: confirm the old stream closes, a new runId is shown, and its Trace contains only new steps.
+
+SSE keeps only connections in this Spring Boot process; MySQL remains the source of
+truth. Multiple backend instances would need a cross-instance event bus and shared
+authentication/authorization before this design could provide reliable user isolation.

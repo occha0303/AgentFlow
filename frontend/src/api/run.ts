@@ -16,3 +16,8 @@ export async function retryRun(runId: number): Promise<AgentRun> {
   const response = await apiClient.post<AgentRun>(`/api/runs/${runId}/retry`)
   return response.data
 }
+
+export function openRunEventStream(runId: number): EventSource {
+  const baseUrl = String(apiClient.defaults.baseURL ?? 'http://localhost:8080').replace(/\/$/, '')
+  return new EventSource(`${baseUrl}/api/runs/${runId}/events`)
+}

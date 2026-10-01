@@ -45,13 +45,14 @@ public class AgentRunService {
 	private final MockWriteService mockWriteService;
 	private final BrowserWriteService browserWriteService;
 	private final RunHeartbeatService heartbeatService;
+	private final RunEventPublisher events;
 	private final TransactionTemplate transactionTemplate;
 
 	public AgentRunService(AgentTaskMapper agentTaskMapper, AgentRunMapper agentRunMapper,
 			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService,
 			AgentAiService agentAiService, AgentApprovalService approvalService, MockWriteService mockWriteService,
 			BrowserWriteService browserWriteService, RunHeartbeatService heartbeatService,
-			PlatformTransactionManager transactionManager) {
+			PlatformTransactionManager transactionManager, RunEventPublisher events) {
 		this.agentTaskMapper = agentTaskMapper;
 		this.agentRunMapper = agentRunMapper;
 		this.agentRunExecutionProducer = agentRunExecutionProducer;
@@ -61,6 +62,7 @@ public class AgentRunService {
 		this.mockWriteService = mockWriteService;
 		this.browserWriteService = browserWriteService;
 		this.heartbeatService = heartbeatService;
+		this.events = events;
 		this.transactionTemplate = new TransactionTemplate(transactionManager);
 	}
 
@@ -74,6 +76,7 @@ public class AgentRunService {
 		run.setStatus(AgentRunStatus.QUEUED);
 		run.setCreatedAt(LocalDateTime.now());
 		agentRunMapper.insert(run);
+		events.runStatus(run);
 
 		try {
 			agentRunExecutionProducer.send(run.getRunId());
@@ -112,6 +115,7 @@ public class AgentRunService {
 			return newRun;
 		});
 		if (retry == null) throw new IllegalStateException("Could not create retry run");
+		events.runStatus(retry);
 		try {
 			agentRunExecutionProducer.send(retry.getRunId());
 		} catch (RuntimeException exception) {
@@ -190,6 +194,7 @@ public class AgentRunService {
 			logger.info("Agent run {} was already claimed by another consumer", runId);
 			return;
 		}
+		events.runStatus(agentRunMapper.selectById(runId));
 
 		AgentStep currentStep = null;
 		AgentToolTraceRecorder traceRecorder = new AgentToolTraceRecorder(runId, agentStepService,
@@ -276,6 +281,7 @@ public class AgentRunService {
 			logger.info("Duplicate resume message for run {} was ignored", runId);
 			return;
 		}
+		events.runStatus(agentRunMapper.selectById(runId));
 
 		AgentStep currentStep = null;
 		try {
@@ -324,12 +330,13 @@ public class AgentRunService {
 	}
 
 	private void markQueuedRunAsFailed(Long runId, String errorMessage) {
-		agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
+		int updated = agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
 				.eq(AgentRun::getRunId, runId)
 				.eq(AgentRun::getStatus, AgentRunStatus.QUEUED)
 				.set(AgentRun::getStatus, AgentRunStatus.FAILED)
 				.set(AgentRun::getErrorMessage, errorMessage)
 				.set(AgentRun::getFinishedAt, LocalDateTime.now()));
+		if (updated == 1) publishTerminal(runId);
 	}
 
 	private void finishRun(Long runId, AgentRunStatus status, String errorMessage) {
@@ -354,7 +361,15 @@ public class AgentRunService {
 
 		if (updatedRows == 0) {
 			logger.info("Agent run {} was already finished; final update was ignored", runId);
+		} else {
+			publishTerminal(runId);
 		}
+	}
+
+	private void publishTerminal(Long runId) {
+		AgentRun completed = agentRunMapper.selectById(runId);
+		events.runStatus(completed);
+		events.resultReady(completed);
 	}
 
 	private String createOutputSummary(String resultText, List<String> usedTools, List<String> toolUsageDetails) {

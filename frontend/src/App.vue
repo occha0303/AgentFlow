@@ -3,19 +3,23 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { uploadKnowledgeFile } from './api/knowledge'
 import { createTask, getTasks, runTask } from './api/task'
-import { getRun, getRunSteps, retryRun } from './api/run'
+import { getRun, getRunSteps, openRunEventStream, retryRun } from './api/run'
 import { approveAction, getRunApprovals, rejectAction } from './api/approval'
 import type { AgentApproval } from './types/approval'
 import type { AgentTask, AgentTaskStatus } from './types/task'
 import type { AgentRunStatus } from './types/run'
 import type { AgentStep, AgentStepStatus } from './types/step'
+import type { ResultEvent, RunSnapshot, RunStatusEvent } from './types/events'
 
 const tasks = ref<AgentTask[]>([])
 const title = ref('')
 const loading = ref(false)
 const creating = ref(false)
 const runningTaskId = ref<number | null>(null)
-const pollTimers = new Map<number, number>()
+const runStreams = new Map<number, EventSource>()
+const fallbackTimers = new Map<number, number>()
+const reconnectTimers = new Map<number, number>()
+const streamFailures = new Map<number, number>()
 const runStatusByTaskId = ref<Record<number, AgentRunStatus>>({})
 const activeRunTaskIds = ref<number[]>([])
 const traceRunId = ref<number | null>(null)
@@ -24,6 +28,7 @@ const traceRunStatus = ref<AgentRunStatus | null>(null)
 const traceResultText = ref<string | null>(null)
 const traceErrorMessage = ref<string | null>(null)
 const traceRetryOfRunId = ref<number | null>(null)
+const traceConnectionState = ref<'Connected' | 'Reconnecting' | 'Polling fallback' | 'Closed'>('Closed')
 const retryingRun = ref(false)
 const traceApprovals = ref<AgentApproval[]>([])
 const decisionReason = ref('')
@@ -130,25 +135,34 @@ async function loadTasks() {
   }
 }
 
-function stopRunPolling(taskId: number, runId: number) {
-  const timer = pollTimers.get(runId)
-
-  if (timer !== undefined) {
-    window.clearInterval(timer)
-    pollTimers.delete(runId)
-  }
-
+function stopRunStream(taskId: number, runId: number) {
+  runStreams.get(runId)?.close()
+  runStreams.delete(runId)
+  streamFailures.delete(runId)
+  const timer = fallbackTimers.get(runId)
+  if (timer !== undefined) window.clearInterval(timer)
+  fallbackTimers.delete(runId)
+  const reconnectTimer = reconnectTimers.get(runId)
+  if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
+  reconnectTimers.delete(runId)
   activeRunTaskIds.value = activeRunTaskIds.value.filter((activeTaskId) => activeTaskId !== taskId)
+  if (traceRunId.value === runId) traceConnectionState.value = 'Closed'
 }
 
-function stopAllTaskPolling() {
-  pollTimers.forEach((timer) => window.clearInterval(timer))
-  pollTimers.clear()
+function stopAllRunStreams() {
+  runStreams.forEach((source) => source.close())
+  runStreams.clear()
+  fallbackTimers.forEach((timer) => window.clearInterval(timer))
+  fallbackTimers.clear()
+  reconnectTimers.forEach((timer) => window.clearTimeout(timer))
+  reconnectTimers.clear()
+  streamFailures.clear()
 }
 
-async function pollRunStatus(taskId: number, runId: number) {
+async function refreshRunFromDatabase(taskId: number, runId: number) {
   try {
     const [run, steps] = await Promise.all([getRun(runId), getRunSteps(runId)])
+    if (runStreams.get(runId)?.readyState === EventSource.OPEN) return
     runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: run.status }
 
     if (traceRunId.value === runId) {
@@ -157,26 +171,113 @@ async function pollRunStatus(taskId: number, runId: number) {
       traceResultText.value = run.resultText
       traceErrorMessage.value = run.errorMessage
       traceRetryOfRunId.value = run.retryOfRunId
-      if (run.status === 'WAITING_APPROVAL') {
-        traceApprovals.value = await getRunApprovals(runId)
+      traceApprovals.value = await getRunApprovals(runId)
+    }
+    if (isTerminalStatus(run.status)) stopRunStream(taskId, runId)
+  } catch {
+    // A network error is not an AgentRun failure; EventSource keeps reconnecting.
+  }
+}
+
+function startFallbackPolling(taskId: number, runId: number) {
+  if (fallbackTimers.has(runId)) return
+  if (traceRunId.value === runId) traceConnectionState.value = 'Polling fallback'
+  void refreshRunFromDatabase(taskId, runId)
+  fallbackTimers.set(runId, window.setInterval(() => void refreshRunFromDatabase(taskId, runId), 5000))
+}
+
+function parseEvent<T>(event: Event): T {
+  return JSON.parse((event as MessageEvent<string>).data) as T
+}
+
+function openStream(taskId: number, runId: number) {
+  if (runStreams.has(runId)) return
+  const source = openRunEventStream(runId)
+  runStreams.set(runId, source)
+  if (traceRunId.value === runId) traceConnectionState.value = 'Reconnecting'
+
+  source.onopen = () => {
+    streamFailures.set(runId, 0)
+    const timer = fallbackTimers.get(runId)
+    if (timer !== undefined) window.clearInterval(timer)
+    fallbackTimers.delete(runId)
+    if (traceRunId.value === runId) traceConnectionState.value = 'Connected'
+  }
+
+  source.addEventListener('snapshot', (event) => {
+    const snapshot = parseEvent<RunSnapshot>(event)
+    if (snapshot.runId !== runId) return
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: snapshot.runStatus }
+    if (traceRunId.value === runId) {
+      traceRunStatus.value = snapshot.runStatus
+      traceResultText.value = snapshot.resultText
+      traceErrorMessage.value = snapshot.errorMessage
+      traceRetryOfRunId.value = snapshot.retryOfRunId
+      traceSteps.value = snapshot.steps
+      if (snapshot.approvals.length > 0) {
+        void getRunApprovals(runId).then((approvals) => {
+          if (traceRunId.value === runId) traceApprovals.value = approvals
+        }).catch(() => {})
+      } else {
+        traceApprovals.value = []
       }
     }
+    if (isTerminalStatus(snapshot.runStatus)) stopRunStream(taskId, runId)
+  })
 
-    if (!isTerminalStatus(run.status)) {
+  source.addEventListener('run-status', (event) => {
+    const update = parseEvent<RunStatusEvent>(event)
+    if (update.runId !== runId) return
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: update.status }
+    if (traceRunId.value === runId) traceRunStatus.value = update.status
+  })
+
+  source.addEventListener('step-update', (event) => {
+    const step = parseEvent<AgentStep>(event)
+    if (step.runId !== runId || traceRunId.value !== runId) return
+    traceSteps.value = [...traceSteps.value.filter((old) => old.id !== step.id), step]
+      .sort((left, right) => left.stepOrder - right.stepOrder)
+  })
+
+  source.addEventListener('approval-update', (event) => {
+    const update = parseEvent<{ approvalId: number; runId: number; status: string }>(event)
+    if (update.runId !== runId || traceRunId.value !== runId) return
+    // The SSE event intentionally excludes the browser action payload.
+    void getRunApprovals(runId).then((approvals) => {
+      if (traceRunId.value === runId) traceApprovals.value = approvals
+    }).catch(() => {})
+  })
+
+  source.addEventListener('result-ready', (event) => {
+    const result = parseEvent<ResultEvent>(event)
+    if (result.runId !== runId) return
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: result.status }
+    if (traceRunId.value === runId) {
+      traceRunStatus.value = result.status
+      traceResultText.value = result.resultText
+      traceErrorMessage.value = result.errorMessage
+    }
+    stopRunStream(taskId, runId)
+  })
+
+  source.addEventListener('error', (event) => {
+    if (event instanceof MessageEvent) {
+      // Business error text is shown by result-ready; do not confuse it with a broken connection.
       return
     }
-
-    stopRunPolling(taskId, runId)
-
-    if (run.status === 'COMPLETED') {
-      ElMessage.success('任务执行完成。')
-    } else {
-      ElMessage.error(run.errorMessage || '任务执行失败。')
+    if (runStreams.get(runId) !== source) return
+    if (traceRunId.value === runId) traceConnectionState.value = 'Reconnecting'
+    const failures = (streamFailures.get(runId) ?? 0) + 1
+    streamFailures.set(runId, failures)
+    if (failures >= 3) startFallbackPolling(taskId, runId)
+    if (source.readyState === EventSource.CLOSED && !reconnectTimers.has(runId)) {
+      runStreams.delete(runId)
+      reconnectTimers.set(runId, window.setTimeout(() => {
+        reconnectTimers.delete(runId)
+        if (activeRunTaskIds.value.includes(taskId)) openStream(taskId, runId)
+      }, 3000))
     }
-  } catch {
-    stopRunPolling(taskId, runId)
-    ElMessage.error('任务状态刷新失败，请刷新任务列表后重试。')
-  }
+  })
 }
 
 async function handleApprove(approval: AgentApproval) {
@@ -225,15 +326,11 @@ async function restoreActiveRun() {
     }
     if (!isTerminalStatus(run.status)) {
       activeRunTaskIds.value = [...activeRunTaskIds.value, taskId]
-      startRunPolling(taskId, runId)
+      openStream(taskId, runId)
     }
   } catch {
     window.localStorage.removeItem(activeRunStorageKey)
   }
-}
-
-function startRunPolling(taskId: number, runId: number) {
-  pollTimers.set(runId, window.setInterval(() => void pollRunStatus(taskId, runId), 1000))
 }
 
 async function handleCreateTask() {
@@ -296,7 +393,7 @@ async function handleRunTask(task: AgentTask) {
     decisionReason.value = ''
     window.localStorage.setItem(activeRunStorageKey, JSON.stringify({ taskId: task.id, runId: run.runId }))
     ElMessage.success('执行已入队，正在后台执行。')
-    startRunPolling(task.id, run.runId)
+    openStream(task.id, run.runId)
   } catch {
     ElMessage.error('任务执行失败，请刷新任务列表后重试。')
   } finally {
@@ -313,7 +410,9 @@ async function handleRetry() {
       '确认手动 Retry',
       { confirmButtonText: '继续 Retry', cancelButtonText: '取消', type: 'warning' },
     )
-    const run = await retryRun(traceRunId.value)
+    const oldRunId = traceRunId.value
+    const run = await retryRun(oldRunId)
+    stopRunStream(run.taskId, oldRunId)
     traceRunId.value = run.runId
     traceSteps.value = []
     traceRunStatus.value = run.status
@@ -325,7 +424,7 @@ async function handleRetry() {
     runStatusByTaskId.value = { ...runStatusByTaskId.value, [run.taskId]: run.status }
     activeRunTaskIds.value = [...new Set([...activeRunTaskIds.value, run.taskId])]
     window.localStorage.setItem(activeRunStorageKey, JSON.stringify({ taskId: run.taskId, runId: run.runId }))
-    startRunPolling(run.taskId, run.runId)
+    openStream(run.taskId, run.runId)
     ElMessage.success(`已创建新的 Run #${run.runId}，正在后台执行。`)
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
@@ -340,7 +439,7 @@ onMounted(async () => {
   await loadTasks()
   await restoreActiveRun()
 })
-onUnmounted(stopAllTaskPolling)
+onUnmounted(stopAllRunStreams)
 </script>
 
 <template>
@@ -434,6 +533,7 @@ onUnmounted(stopAllTaskPolling)
       </template>
 
       <p v-if="traceRetryOfRunId !== null" class="trace-empty">Retry of Run #{{ traceRetryOfRunId }}</p>
+      <p class="trace-empty">Live updates: {{ traceConnectionState }}</p>
 
       <p v-if="traceSteps.length === 0" class="trace-empty">等待 Consumer 创建执行步骤…</p>
       <ul v-else class="trace-list">
