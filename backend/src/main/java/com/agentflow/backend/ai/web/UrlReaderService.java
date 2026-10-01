@@ -47,6 +47,8 @@ public class UrlReaderService {
 					String location = response.headers().firstValue("Location")
 							.orElseThrow(() -> new IllegalStateException("UrlReaderTool failed: redirect has no location"));
 					currentUrl = currentUrl.resolve(location);
+				} catch (IOException exception) {
+					throw new IllegalStateException("UrlReaderTool failed: could not close page response", exception);
 				}
 				continue;
 			}
