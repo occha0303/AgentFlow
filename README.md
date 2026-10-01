@@ -37,3 +37,17 @@ MySQL remains the business database. PGvector stores only document chunks, metad
 knowledge base. Start the local databases with `docker compose up -d`; the default PGvector connection targets
 `jdbc:postgresql://localhost:5432/agentflow_rag`. Configure an embedding-capable OpenAI-compatible provider with
 the `EMBEDDING_*` variables above. A chat endpoint that does not implement embeddings cannot index documents.
+
+## Local run reliability
+
+`docker compose up -d redis` starts the local Redis execution-lock service on `127.0.0.1:6379`.
+It has no persistence volume: MySQL remains the source of truth for runs, steps and approvals.
+The backend defaults to an unauthenticated local Redis; `REDIS_HOST`, `REDIS_PORT`, and
+`REDIS_PASSWORD` can point it at a protected instance. `AGENT_RUN_LOCK_TTL_SECONDS` defaults to
+900 and `AGENT_RUN_STALE_SECONDS` defaults to 600. A scheduler checks stale `RUNNING` runs
+every 60 seconds, but never times out `WAITING_APPROVAL`.
+
+`POST /api/runs/{runId}/retry` accepts only a `FAILED` run, creates a new `QUEUED` run with
+`retryOfRunId`, and returns HTTP 202. The old run and its approvals remain unchanged; any
+new side-effect proposal requires a new approval. A timeout is not automatically retried
+because an external browser action may have succeeded just before the worker stopped.

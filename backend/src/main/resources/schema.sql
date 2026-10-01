@@ -13,10 +13,34 @@ CREATE TABLE IF NOT EXISTS agent_run (
     created_at DATETIME NOT NULL,
     started_at DATETIME,
     finished_at DATETIME,
+    heartbeat_at DATETIME,
+    retry_of_run_id BIGINT,
     INDEX idx_agent_run_task_id (task_id)
 );
 
-ALTER TABLE agent_run ADD COLUMN IF NOT EXISTS result_text TEXT AFTER status;
+SET @agentflow_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agent_run ADD COLUMN result_text TEXT AFTER status', 'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'agent_run' AND column_name = 'result_text');
+PREPARE agentflow_stmt FROM @agentflow_ddl;
+EXECUTE agentflow_stmt;
+DEALLOCATE PREPARE agentflow_stmt;
+
+SET @agentflow_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agent_run ADD COLUMN heartbeat_at DATETIME', 'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'agent_run' AND column_name = 'heartbeat_at');
+PREPARE agentflow_stmt FROM @agentflow_ddl;
+EXECUTE agentflow_stmt;
+DEALLOCATE PREPARE agentflow_stmt;
+
+SET @agentflow_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agent_run ADD COLUMN retry_of_run_id BIGINT', 'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'agent_run' AND column_name = 'retry_of_run_id');
+PREPARE agentflow_stmt FROM @agentflow_ddl;
+EXECUTE agentflow_stmt;
+DEALLOCATE PREPARE agentflow_stmt;
 
 CREATE TABLE IF NOT EXISTS agent_step (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -11,3 +11,8 @@ export async function getRunSteps(runId: number): Promise<AgentStep[]> {
   const response = await apiClient.get<AgentStep[]>(`/api/runs/${runId}/steps`)
   return response.data
 }
+
+export async function retryRun(runId: number): Promise<AgentRun> {
+  const response = await apiClient.post<AgentRun>(`/api/runs/${runId}/retry`)
+  return response.data
+}

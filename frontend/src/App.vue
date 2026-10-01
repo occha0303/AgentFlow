@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { uploadKnowledgeFile } from './api/knowledge'
 import { createTask, getTasks, runTask } from './api/task'
-import { getRun, getRunSteps } from './api/run'
+import { getRun, getRunSteps, retryRun } from './api/run'
 import { approveAction, getRunApprovals, rejectAction } from './api/approval'
 import type { AgentApproval } from './types/approval'
 import type { AgentTask, AgentTaskStatus } from './types/task'
@@ -23,6 +23,8 @@ const traceSteps = ref<AgentStep[]>([])
 const traceRunStatus = ref<AgentRunStatus | null>(null)
 const traceResultText = ref<string | null>(null)
 const traceErrorMessage = ref<string | null>(null)
+const traceRetryOfRunId = ref<number | null>(null)
+const retryingRun = ref(false)
 const traceApprovals = ref<AgentApproval[]>([])
 const decisionReason = ref('')
 const decidingApproval = ref(false)
@@ -137,9 +139,6 @@ function stopRunPolling(taskId: number, runId: number) {
   }
 
   activeRunTaskIds.value = activeRunTaskIds.value.filter((activeTaskId) => activeTaskId !== taskId)
-  if (traceRunId.value === runId) {
-    window.localStorage.removeItem(activeRunStorageKey)
-  }
 }
 
 function stopAllTaskPolling() {
@@ -157,6 +156,7 @@ async function pollRunStatus(taskId: number, runId: number) {
       traceRunStatus.value = run.status
       traceResultText.value = run.resultText
       traceErrorMessage.value = run.errorMessage
+      traceRetryOfRunId.value = run.retryOfRunId
       if (run.status === 'WAITING_APPROVAL') {
         traceApprovals.value = await getRunApprovals(runId)
       }
@@ -217,6 +217,7 @@ async function restoreActiveRun() {
     traceRunStatus.value = run.status
     traceResultText.value = run.resultText
     traceErrorMessage.value = run.errorMessage
+    traceRetryOfRunId.value = run.retryOfRunId
     traceSteps.value = await getRunSteps(runId)
     runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: run.status }
     if (run.status === 'WAITING_APPROVAL') {
@@ -225,8 +226,6 @@ async function restoreActiveRun() {
     if (!isTerminalStatus(run.status)) {
       activeRunTaskIds.value = [...activeRunTaskIds.value, taskId]
       startRunPolling(taskId, runId)
-    } else {
-      window.localStorage.removeItem(activeRunStorageKey)
     }
   } catch {
     window.localStorage.removeItem(activeRunStorageKey)
@@ -292,6 +291,7 @@ async function handleRunTask(task: AgentTask) {
     traceRunStatus.value = run.status
     traceResultText.value = run.resultText
     traceErrorMessage.value = run.errorMessage
+    traceRetryOfRunId.value = run.retryOfRunId
     traceApprovals.value = []
     decisionReason.value = ''
     window.localStorage.setItem(activeRunStorageKey, JSON.stringify({ taskId: task.id, runId: run.runId }))
@@ -301,6 +301,38 @@ async function handleRunTask(task: AgentTask) {
     ElMessage.error('任务执行失败，请刷新任务列表后重试。')
   } finally {
     runningTaskId.value = null
+  }
+}
+
+async function handleRetry() {
+  if (traceRunId.value === null || traceRunStatus.value !== 'FAILED' || retryingRun.value) return
+  retryingRun.value = true
+  try {
+    await ElMessageBox.confirm(
+      '上一次浏览器或发布操作可能已经在外部成功。请先核对目标系统，再决定是否重新执行。新 Run 会重新请求审批。',
+      '确认手动 Retry',
+      { confirmButtonText: '继续 Retry', cancelButtonText: '取消', type: 'warning' },
+    )
+    const run = await retryRun(traceRunId.value)
+    traceRunId.value = run.runId
+    traceSteps.value = []
+    traceRunStatus.value = run.status
+    traceResultText.value = run.resultText
+    traceErrorMessage.value = run.errorMessage
+    traceRetryOfRunId.value = run.retryOfRunId
+    traceApprovals.value = []
+    decisionReason.value = ''
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [run.taskId]: run.status }
+    activeRunTaskIds.value = [...new Set([...activeRunTaskIds.value, run.taskId])]
+    window.localStorage.setItem(activeRunStorageKey, JSON.stringify({ taskId: run.taskId, runId: run.runId }))
+    startRunPolling(run.taskId, run.runId)
+    ElMessage.success(`已创建新的 Run #${run.runId}，正在后台执行。`)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error('Retry 失败；请确认旧 Run 仍为 FAILED，且尚未被重试。')
+    }
+  } finally {
+    retryingRun.value = false
   }
 }
 
@@ -401,6 +433,8 @@ onUnmounted(stopAllTaskPolling)
         <h2>Execution Trace · Run #{{ traceRunId }}</h2>
       </template>
 
+      <p v-if="traceRetryOfRunId !== null" class="trace-empty">Retry of Run #{{ traceRetryOfRunId }}</p>
+
       <p v-if="traceSteps.length === 0" class="trace-empty">等待 Consumer 创建执行步骤…</p>
       <ul v-else class="trace-list">
         <li v-for="step in traceSteps" :key="step.id" class="trace-item">
@@ -455,8 +489,12 @@ onUnmounted(stopAllTaskPolling)
           {{ traceResultText || 'LLM returned no content.' }}
         </p>
         <p v-else-if="traceRunStatus === 'FAILED'" class="trace-error">
-          {{ traceErrorMessage || 'LLM request failed.' }}
+          {{ traceErrorMessage?.startsWith('Execution interrupted or timed out')
+            ? 'Execution interrupted or timed out.' : (traceErrorMessage || 'LLM request failed.') }}
         </p>
+        <el-button v-if="traceRunStatus === 'FAILED'" type="primary" :loading="retryingRun" @click="handleRetry">
+          Retry
+        </el-button>
       </section>
     </el-card>
   </main>

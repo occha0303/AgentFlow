@@ -1,6 +1,7 @@
 package com.agentflow.backend.ai.trace;
 
 import com.agentflow.backend.ai.browser.BrowserPageSnapshot;
+import com.agentflow.backend.run.service.RunHeartbeatService;
 import com.agentflow.backend.step.model.AgentStep;
 import com.agentflow.backend.step.service.AgentStepService;
 
@@ -12,27 +13,33 @@ public class AgentToolTraceRecorder {
 
 	private final Long runId;
 	private final AgentStepService agentStepService;
+	private final RunHeartbeatService heartbeatService;
 	private int nextStepOrder;
 	private boolean approvalPrepared;
 	private BrowserPageSnapshot browserSnapshot;
 	private String browserRequestedUrl;
 
-	public AgentToolTraceRecorder(Long runId, AgentStepService agentStepService, int firstStepOrder) {
+	public AgentToolTraceRecorder(Long runId, AgentStepService agentStepService,
+			RunHeartbeatService heartbeatService, int firstStepOrder) {
 		this.runId = runId;
 		this.agentStepService = agentStepService;
+		this.heartbeatService = heartbeatService;
 		this.nextStepOrder = firstStepOrder;
 	}
 
 	public AgentStep startBrowserStep(String url) {
+		heartbeatService.touchRunning(runId);
 		return agentStepService.startStep(runId, nextStepOrder++, "BROWSER", abbreviate(url, 500));
 	}
 
 	public void completeBrowserStep(AgentStep step, String outputSummary) {
 		agentStepService.completeStep(step.getId(), abbreviate(outputSummary, 500));
+		heartbeatService.touchRunning(runId);
 	}
 
 	public void failBrowserStep(AgentStep step, String errorMessage) {
 		agentStepService.failStep(step.getId(), abbreviate(errorMessage, 500));
+		heartbeatService.touchRunning(runId);
 	}
 
 	public int nextStepOrder() {

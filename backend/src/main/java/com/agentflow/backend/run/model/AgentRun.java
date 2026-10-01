@@ -18,6 +18,8 @@ public class AgentRun {
 	private LocalDateTime createdAt;
 	private LocalDateTime startedAt;
 	private LocalDateTime finishedAt;
+	private LocalDateTime heartbeatAt;
+	private Long retryOfRunId;
 
 	public AgentRun() {
 	}
@@ -84,5 +86,21 @@ public class AgentRun {
 
 	public void setFinishedAt(LocalDateTime finishedAt) {
 		this.finishedAt = finishedAt;
+	}
+
+	public LocalDateTime getHeartbeatAt() {
+		return heartbeatAt;
+	}
+
+	public void setHeartbeatAt(LocalDateTime heartbeatAt) {
+		this.heartbeatAt = heartbeatAt;
+	}
+
+	public Long getRetryOfRunId() {
+		return retryOfRunId;
+	}
+
+	public void setRetryOfRunId(Long retryOfRunId) {
+		this.retryOfRunId = retryOfRunId;
 	}
 }

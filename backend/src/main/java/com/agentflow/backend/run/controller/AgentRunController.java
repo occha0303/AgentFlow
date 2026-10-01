@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.http.ResponseEntity;
 
 import com.agentflow.backend.run.model.AgentRun;
 import com.agentflow.backend.run.service.AgentRunService;
@@ -31,5 +33,10 @@ public class AgentRunController {
 	@GetMapping("/{runId}/steps")
 	public List<AgentStep> getSteps(@PathVariable Long runId) {
 		return agentRunService.getSteps(runId);
+	}
+
+	@PostMapping("/{runId}/retry")
+	public ResponseEntity<AgentRun> retryRun(@PathVariable Long runId) {
+		return ResponseEntity.accepted().body(agentRunService.retryRun(runId));
 	}
 }

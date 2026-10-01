@@ -9,4 +9,6 @@ export interface AgentRun {
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
+  heartbeatAt: string | null
+  retryOfRunId: number | null
 }

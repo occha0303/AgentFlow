@@ -60,6 +60,20 @@ services:
       timeout: 5s
       retries: 12
 
+  redis:
+    image: redis:8.2.10-alpine
+    container_name: agentflow-redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: >
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+        exec redis-server --save "" --appendonly no --requirepass "$$REDIS_PASSWORD";
+      else
+        exec redis-server --save "" --appendonly no;
+      fi'
+    ports:
+      - "127.0.0.1:6379:6379"
+
 volumes:
   agentflow-mysql-data:
   agentflow-rocketmq-data:

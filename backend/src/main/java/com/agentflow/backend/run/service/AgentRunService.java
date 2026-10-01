@@ -8,7 +8,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.agentflow.backend.ai.model.AgentAiExecutionResult;
 import com.agentflow.backend.ai.browser.BrowserActionResult;
@@ -41,11 +44,14 @@ public class AgentRunService {
 	private final AgentApprovalService approvalService;
 	private final MockWriteService mockWriteService;
 	private final BrowserWriteService browserWriteService;
+	private final RunHeartbeatService heartbeatService;
+	private final TransactionTemplate transactionTemplate;
 
 	public AgentRunService(AgentTaskMapper agentTaskMapper, AgentRunMapper agentRunMapper,
 			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService,
 			AgentAiService agentAiService, AgentApprovalService approvalService, MockWriteService mockWriteService,
-			BrowserWriteService browserWriteService) {
+			BrowserWriteService browserWriteService, RunHeartbeatService heartbeatService,
+			PlatformTransactionManager transactionManager) {
 		this.agentTaskMapper = agentTaskMapper;
 		this.agentRunMapper = agentRunMapper;
 		this.agentRunExecutionProducer = agentRunExecutionProducer;
@@ -54,6 +60,8 @@ public class AgentRunService {
 		this.approvalService = approvalService;
 		this.mockWriteService = mockWriteService;
 		this.browserWriteService = browserWriteService;
+		this.heartbeatService = heartbeatService;
+		this.transactionTemplate = new TransactionTemplate(transactionManager);
 	}
 
 	public AgentRun requestRun(Long taskId) {
@@ -78,6 +86,42 @@ public class AgentRunService {
 		return run;
 	}
 
+	public AgentRun retryRun(Long failedRunId) {
+		AgentRun retry = transactionTemplate.execute(status -> {
+			if (agentRunMapper.lockRunRow(failedRunId) == null) {
+				throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent run not found");
+			}
+			AgentRun original = agentRunMapper.selectById(failedRunId);
+			if (original.getStatus() != AgentRunStatus.FAILED) {
+				throw new ResponseStatusException(HttpStatus.CONFLICT, "Only FAILED runs can be retried");
+			}
+			Long existingRetries = agentRunMapper.selectCount(new LambdaQueryWrapper<AgentRun>()
+					.eq(AgentRun::getRetryOfRunId, failedRunId));
+			if (existingRetries > 0) {
+				throw new ResponseStatusException(HttpStatus.CONFLICT, "This run has already been retried");
+			}
+			if (agentTaskMapper.selectById(original.getTaskId()) == null) {
+				throw new ResponseStatusException(HttpStatus.CONFLICT, "The related task no longer exists");
+			}
+			AgentRun newRun = new AgentRun();
+			newRun.setTaskId(original.getTaskId());
+			newRun.setRetryOfRunId(failedRunId);
+			newRun.setStatus(AgentRunStatus.QUEUED);
+			newRun.setCreatedAt(LocalDateTime.now());
+			agentRunMapper.insert(newRun);
+			return newRun;
+		});
+		if (retry == null) throw new IllegalStateException("Could not create retry run");
+		try {
+			agentRunExecutionProducer.send(retry.getRunId());
+		} catch (RuntimeException exception) {
+			markQueuedRunAsFailed(retry.getRunId(), "Retry run could not be queued");
+			throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+					"Retry run could not be queued", exception);
+		}
+		return retry;
+	}
+
 	public List<AgentStep> getSteps(Long runId) {
 		getRun(runId);
 		return agentStepService.getStepsForRun(runId);
@@ -91,6 +135,17 @@ public class AgentRunService {
 		}
 
 		return run;
+	}
+
+	/** Cheap database gate before attempting Redis; executeRun rechecks after locking. */
+	public boolean canProcessMessage(Long runId) {
+		AgentRun run = agentRunMapper.selectById(runId);
+		if (run == null || (run.getStatus() != AgentRunStatus.QUEUED
+				&& run.getStatus() != AgentRunStatus.WAITING_APPROVAL)) {
+			logger.info("Ignoring duplicate or ineligible run message for run {}", runId);
+			return false;
+		}
+		return true;
 	}
 
 	public void executeRun(Long runId) {
@@ -123,11 +178,13 @@ public class AgentRunService {
 			return;
 		}
 
+		LocalDateTime startedAt = LocalDateTime.now();
 		int startedRows = agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
 				.eq(AgentRun::getRunId, runId)
 				.eq(AgentRun::getStatus, AgentRunStatus.QUEUED)
 				.set(AgentRun::getStatus, AgentRunStatus.RUNNING)
-				.set(AgentRun::getStartedAt, LocalDateTime.now()));
+				.set(AgentRun::getStartedAt, startedAt)
+				.set(AgentRun::getHeartbeatAt, startedAt));
 
 		if (startedRows == 0) {
 			logger.info("Agent run {} was already claimed by another consumer", runId);
@@ -135,7 +192,8 @@ public class AgentRunService {
 		}
 
 		AgentStep currentStep = null;
-		AgentToolTraceRecorder traceRecorder = new AgentToolTraceRecorder(runId, agentStepService, 3);
+		AgentToolTraceRecorder traceRecorder = new AgentToolTraceRecorder(runId, agentStepService,
+				heartbeatService, 3);
 		try {
 			AgentTask task = agentTaskMapper.selectById(run.getTaskId());
 
@@ -150,9 +208,12 @@ public class AgentRunService {
 			currentStep = agentStepService.startStep(runId, 1, "PLAN", task.getTitle());
 			Thread.sleep(300);
 			agentStepService.completeStep(currentStep.getId(), "Prepare LLM execution");
+			heartbeatService.touchRunning(runId);
 
 			currentStep = agentStepService.startStep(runId, 2, "EXECUTE", task.getTitle());
+			heartbeatService.touchRunning(runId);
 			AgentAiExecutionResult executionResult = agentAiService.execute(task.getTitle(), traceRecorder);
+			heartbeatService.touchRunning(runId);
 			if (traceRecorder.approvalPrepared()) {
 				logger.info("Run {} paused for user approval; Consumer is returning", runId);
 				return;
@@ -171,8 +232,10 @@ public class AgentRunService {
 					createOutputSummary(resultText, executionResult.usedTools(), executionResult.toolUsageDetails()));
 
 			currentStep = agentStepService.startStep(runId, traceRecorder.nextStepOrder(), "FINALIZE", "Persist the LLM result");
+			heartbeatService.touchRunning(runId);
 			Thread.sleep(300);
 			agentStepService.completeStep(currentStep.getId(), "LLM result saved");
+			heartbeatService.touchRunning(runId);
 			finishRun(runId, AgentRunStatus.COMPLETED, null, resultText);
 		} catch (InterruptedException exception) {
 			Thread.currentThread().interrupt();
@@ -207,7 +270,8 @@ public class AgentRunService {
 		int claimed = agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
 				.eq(AgentRun::getRunId, runId)
 				.eq(AgentRun::getStatus, AgentRunStatus.WAITING_APPROVAL)
-				.set(AgentRun::getStatus, AgentRunStatus.RUNNING));
+				.set(AgentRun::getStatus, AgentRunStatus.RUNNING)
+				.set(AgentRun::getHeartbeatAt, LocalDateTime.now()));
 		if (claimed != 1) {
 			logger.info("Duplicate resume message for run {} was ignored", runId);
 			return;
@@ -228,6 +292,7 @@ public class AgentRunService {
 			boolean browserAction = approval.getActionType().startsWith("BROWSER_");
 			currentStep = agentStepService.startStep(runId, approvalStep.getStepOrder() + 1,
 					browserAction ? "BROWSER_ACTION" : "WRITE ACTION", approval.getActionSummary());
+			heartbeatService.touchRunning(runId);
 			String result;
 			if (browserAction) {
 				BrowserActionResult browserResult = browserWriteService.executeApprovedBrowserAction(approval.getId(), runId);
@@ -239,9 +304,12 @@ public class AgentRunService {
 				result = mockWriteService.executeApprovedAction(approval.getId(), runId);
 				agentStepService.completeStep(currentStep.getId(), "Mock publication completed on demo platform");
 			}
+			heartbeatService.touchRunning(runId);
 			currentStep = agentStepService.startStep(runId, approvalStep.getStepOrder() + 2,
 					"FINALIZE", "Persist approved action result");
+			heartbeatService.touchRunning(runId);
 			agentStepService.completeStep(currentStep.getId(), "Approved action result saved");
+			heartbeatService.touchRunning(runId);
 			finishRun(runId, AgentRunStatus.COMPLETED, null, result);
 		} catch (RuntimeException exception) {
 			logger.warn("Approved action failed for run {}: {}", runId, exception.getClass().getSimpleName());

@@ -87,6 +87,15 @@ public class AgentStepService {
 		}
 	}
 
+	public void failRunningStepsForRun(Long runId, String errorMessage) {
+		agentStepMapper.update(null, new LambdaUpdateWrapper<AgentStep>()
+				.eq(AgentStep::getRunId, runId)
+				.eq(AgentStep::getStatus, AgentStepStatus.RUNNING)
+				.set(AgentStep::getStatus, AgentStepStatus.FAILED)
+				.set(AgentStep::getErrorMessage, errorMessage)
+				.set(AgentStep::getFinishedAt, LocalDateTime.now()));
+	}
+
 	public List<AgentStep> getStepsForRun(Long runId) {
 		return agentStepMapper.selectList(new LambdaQueryWrapper<AgentStep>()
 				.eq(AgentStep::getRunId, runId)
