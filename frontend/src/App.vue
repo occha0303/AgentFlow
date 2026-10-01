@@ -4,6 +4,8 @@ import { ElMessage } from 'element-plus'
 import { uploadKnowledgeFile } from './api/knowledge'
 import { createTask, getTasks, runTask } from './api/task'
 import { getRun, getRunSteps } from './api/run'
+import { approveAction, getRunApprovals, rejectAction } from './api/approval'
+import type { AgentApproval } from './types/approval'
 import type { AgentTask, AgentTaskStatus } from './types/task'
 import type { AgentRunStatus } from './types/run'
 import type { AgentStep, AgentStepStatus } from './types/step'
@@ -21,11 +23,28 @@ const traceSteps = ref<AgentStep[]>([])
 const traceRunStatus = ref<AgentRunStatus | null>(null)
 const traceResultText = ref<string | null>(null)
 const traceErrorMessage = ref<string | null>(null)
+const traceApprovals = ref<AgentApproval[]>([])
+const decisionReason = ref('')
+const decidingApproval = ref(false)
 const uploadingKnowledge = ref(false)
 const knowledgeUploadMessage = ref('')
+const activeRunStorageKey = 'agentflow.activeRun'
 
 function isTerminalStatus(status: AgentRunStatus) {
   return status === 'COMPLETED' || status === 'FAILED'
+}
+
+function pendingApproval(): AgentApproval | undefined {
+  return traceApprovals.value.find((approval) => approval.status === 'PENDING')
+}
+
+function approvalField(approval: AgentApproval, field: 'target' | 'content'): string {
+  try {
+    const payload = JSON.parse(approval.actionPayload) as Record<string, unknown>
+    return typeof payload[field] === 'string' ? payload[field] : ''
+  } catch {
+    return ''
+  }
 }
 
 function isTaskRunActive(taskId: number) {
@@ -51,6 +70,8 @@ function runStatusTagType(status: AgentRunStatus): 'info' | 'warning' | 'success
       return 'info'
     case 'RUNNING':
       return 'warning'
+    case 'WAITING_APPROVAL':
+      return 'warning'
     case 'COMPLETED':
       return 'success'
     case 'FAILED':
@@ -63,6 +84,8 @@ function stepStatusTagType(status: AgentStepStatus): 'info' | 'warning' | 'succe
     case 'PENDING':
       return 'info'
     case 'RUNNING':
+      return 'warning'
+    case 'WAITING_APPROVAL':
       return 'warning'
     case 'COMPLETED':
       return 'success'
@@ -104,6 +127,9 @@ function stopRunPolling(taskId: number, runId: number) {
   }
 
   activeRunTaskIds.value = activeRunTaskIds.value.filter((activeTaskId) => activeTaskId !== taskId)
+  if (traceRunId.value === runId) {
+    window.localStorage.removeItem(activeRunStorageKey)
+  }
 }
 
 function stopAllTaskPolling() {
@@ -121,6 +147,9 @@ async function pollRunStatus(taskId: number, runId: number) {
       traceRunStatus.value = run.status
       traceResultText.value = run.resultText
       traceErrorMessage.value = run.errorMessage
+      if (run.status === 'WAITING_APPROVAL') {
+        traceApprovals.value = await getRunApprovals(runId)
+      }
     }
 
     if (!isTerminalStatus(run.status)) {
@@ -137,6 +166,60 @@ async function pollRunStatus(taskId: number, runId: number) {
   } catch {
     stopRunPolling(taskId, runId)
     ElMessage.error('任务状态刷新失败，请刷新任务列表后重试。')
+  }
+}
+
+async function handleApprove(approval: AgentApproval) {
+  decidingApproval.value = true
+  try {
+    const decided = await approveAction(approval.id)
+    traceApprovals.value = traceApprovals.value.map((item) => item.id === decided.id ? decided : item)
+    ElMessage.success('已批准，后台将恢复执行。')
+  } catch {
+    ElMessage.error('批准失败；该审批可能已被处理。')
+  } finally {
+    decidingApproval.value = false
+  }
+}
+
+async function handleReject(approval: AgentApproval) {
+  decidingApproval.value = true
+  try {
+    const decided = await rejectAction(approval.id, decisionReason.value.trim())
+    traceApprovals.value = traceApprovals.value.map((item) => item.id === decided.id ? decided : item)
+    ElMessage.info('操作已拒绝。')
+  } catch {
+    ElMessage.error('拒绝失败；该审批可能已被处理。')
+  } finally {
+    decidingApproval.value = false
+  }
+}
+
+async function restoreActiveRun() {
+  const saved = window.localStorage.getItem(activeRunStorageKey)
+  if (!saved) return
+
+  try {
+    const { taskId, runId } = JSON.parse(saved) as { taskId: number; runId: number }
+    if (!Number.isSafeInteger(taskId) || !Number.isSafeInteger(runId)) return
+    const run = await getRun(runId)
+    traceRunId.value = runId
+    traceRunStatus.value = run.status
+    traceResultText.value = run.resultText
+    traceErrorMessage.value = run.errorMessage
+    traceSteps.value = await getRunSteps(runId)
+    runStatusByTaskId.value = { ...runStatusByTaskId.value, [taskId]: run.status }
+    if (run.status === 'WAITING_APPROVAL') {
+      traceApprovals.value = await getRunApprovals(runId)
+    }
+    if (!isTerminalStatus(run.status)) {
+      activeRunTaskIds.value = [...activeRunTaskIds.value, taskId]
+      startRunPolling(taskId, runId)
+    } else {
+      window.localStorage.removeItem(activeRunStorageKey)
+    }
+  } catch {
+    window.localStorage.removeItem(activeRunStorageKey)
   }
 }
 
@@ -199,6 +282,9 @@ async function handleRunTask(task: AgentTask) {
     traceRunStatus.value = run.status
     traceResultText.value = run.resultText
     traceErrorMessage.value = run.errorMessage
+    traceApprovals.value = []
+    decisionReason.value = ''
+    window.localStorage.setItem(activeRunStorageKey, JSON.stringify({ taskId: task.id, runId: run.runId }))
     ElMessage.success('执行已入队，正在后台执行。')
     startRunPolling(task.id, run.runId)
   } catch {
@@ -208,7 +294,10 @@ async function handleRunTask(task: AgentTask) {
   }
 }
 
-onMounted(loadTasks)
+onMounted(async () => {
+  await loadTasks()
+  await restoreActiveRun()
+})
 onUnmounted(stopAllTaskPolling)
 </script>
 
@@ -318,11 +407,27 @@ onUnmounted(stopAllTaskPolling)
         </li>
       </ul>
 
+      <section v-if="traceRunStatus === 'WAITING_APPROVAL' && pendingApproval()" class="approval-section">
+        <h3>Pending Approval</h3>
+        <p><strong>Action:</strong> {{ pendingApproval()!.actionSummary }}</p>
+        <p><strong>Target:</strong> {{ approvalField(pendingApproval()!, 'target') }}</p>
+        <p><strong>Content:</strong> {{ approvalField(pendingApproval()!, 'content') }}</p>
+        <el-input v-model="decisionReason" aria-label="Reject reason" placeholder="Reject reason (optional)" />
+        <div class="approval-actions">
+          <el-button type="primary" :loading="decidingApproval" @click="handleApprove(pendingApproval()!)">Approve</el-button>
+          <el-button type="danger" :disabled="decidingApproval" @click="handleReject(pendingApproval()!)">Reject</el-button>
+        </div>
+      </section>
+      <p v-else-if="traceRunStatus === 'WAITING_APPROVAL' && traceApprovals.some((approval) => approval.status === 'APPROVED')" class="trace-empty">
+        Approved. Waiting for the Consumer to resume...
+      </p>
+
       <section class="result-section">
         <h3>Result</h3>
         <p v-if="traceRunStatus === 'QUEUED' || traceRunStatus === 'RUNNING'" class="trace-empty">
           Agent is working...
         </p>
+        <p v-else-if="traceRunStatus === 'WAITING_APPROVAL'" class="trace-empty">Waiting for user approval...</p>
         <p v-else-if="traceRunStatus === 'COMPLETED'" class="result-text">
           {{ traceResultText || 'LLM returned no content.' }}
         </p>

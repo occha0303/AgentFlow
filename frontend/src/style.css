@@ -113,6 +113,18 @@ body {
   border-top: 1px solid #e5e7eb;
 }
 
+.approval-section {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid #facc15;
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
+.approval-section h3 { margin: 0 0 12px; }
+.approval-section p { margin: 8px 0; overflow-wrap: anywhere; }
+.approval-actions { display: flex; gap: 8px; margin-top: 12px; }
+
 .result-section h3 {
   margin: 0 0 12px;
   font-size: 16px;

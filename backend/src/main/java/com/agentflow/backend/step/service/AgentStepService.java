@@ -52,6 +52,41 @@ public class AgentStepService {
 				.set(AgentStep::getFinishedAt, LocalDateTime.now()));
 	}
 
+	public void waitForApproval(Long stepId, String summary) {
+		int updated = agentStepMapper.update(null, new LambdaUpdateWrapper<AgentStep>()
+				.eq(AgentStep::getId, stepId)
+				.eq(AgentStep::getStatus, AgentStepStatus.RUNNING)
+				.set(AgentStep::getStatus, AgentStepStatus.WAITING_APPROVAL)
+				.set(AgentStep::getOutputSummary, summary));
+		if (updated != 1) {
+			throw new IllegalStateException("Step is not running while requesting approval");
+		}
+	}
+
+	public void completeWaitingStep(Long stepId, String summary) {
+		int updated = agentStepMapper.update(null, new LambdaUpdateWrapper<AgentStep>()
+				.eq(AgentStep::getId, stepId)
+				.eq(AgentStep::getStatus, AgentStepStatus.WAITING_APPROVAL)
+				.set(AgentStep::getStatus, AgentStepStatus.COMPLETED)
+				.set(AgentStep::getOutputSummary, summary)
+				.set(AgentStep::getFinishedAt, LocalDateTime.now()));
+		if (updated != 1) {
+			throw new IllegalStateException("Step is not waiting for approval");
+		}
+	}
+
+	public void failWaitingStep(Long stepId, String errorMessage) {
+		int updated = agentStepMapper.update(null, new LambdaUpdateWrapper<AgentStep>()
+				.eq(AgentStep::getId, stepId)
+				.eq(AgentStep::getStatus, AgentStepStatus.WAITING_APPROVAL)
+				.set(AgentStep::getStatus, AgentStepStatus.FAILED)
+				.set(AgentStep::getErrorMessage, errorMessage)
+				.set(AgentStep::getFinishedAt, LocalDateTime.now()));
+		if (updated != 1) {
+			throw new IllegalStateException("Step is not waiting for approval");
+		}
+	}
+
 	public List<AgentStep> getStepsForRun(Long runId) {
 		return agentStepMapper.selectList(new LambdaQueryWrapper<AgentStep>()
 				.eq(AgentStep::getRunId, runId)

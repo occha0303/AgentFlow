@@ -32,3 +32,18 @@ CREATE TABLE IF NOT EXISTS agent_step (
     finished_at DATETIME,
     INDEX idx_agent_step_run_id (run_id)
 );
+
+CREATE TABLE IF NOT EXISTS agent_approval (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    run_id BIGINT NOT NULL,
+    step_id BIGINT NOT NULL,
+    action_type VARCHAR(50) NOT NULL,
+    action_summary VARCHAR(500) NOT NULL,
+    action_payload TEXT NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    created_at DATETIME NOT NULL,
+    decided_at DATETIME,
+    decision_reason VARCHAR(500),
+    INDEX idx_agent_approval_run_id (run_id),
+    INDEX idx_agent_approval_step_id (step_id)
+);

@@ -12,6 +12,7 @@ public class AgentToolTraceRecorder {
 	private final Long runId;
 	private final AgentStepService agentStepService;
 	private int nextStepOrder;
+	private boolean approvalPrepared;
 
 	public AgentToolTraceRecorder(Long runId, AgentStepService agentStepService, int firstStepOrder) {
 		this.runId = runId;
@@ -33,6 +34,22 @@ public class AgentToolTraceRecorder {
 
 	public int nextStepOrder() {
 		return nextStepOrder;
+	}
+
+	public int claimStepOrder() {
+		return nextStepOrder++;
+	}
+
+	public Long runId() {
+		return runId;
+	}
+
+	public void markApprovalPrepared() {
+		approvalPrepared = true;
+	}
+
+	public boolean approvalPrepared() {
+		return approvalPrepared;
 	}
 
 	private String abbreviate(String value, int limit) {

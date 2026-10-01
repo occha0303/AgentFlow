@@ -4,6 +4,7 @@ public enum AgentStepStatus {
 
 	PENDING,
 	RUNNING,
+	WAITING_APPROVAL,
 	COMPLETED,
 	FAILED
 }

@@ -1,4 +1,4 @@
-export type AgentRunStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+export type AgentRunStatus = 'QUEUED' | 'RUNNING' | 'WAITING_APPROVAL' | 'COMPLETED' | 'FAILED'
 
 export interface AgentRun {
   runId: number

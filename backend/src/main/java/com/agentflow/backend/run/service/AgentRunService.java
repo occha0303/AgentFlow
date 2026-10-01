@@ -13,6 +13,10 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.agentflow.backend.ai.model.AgentAiExecutionResult;
 import com.agentflow.backend.ai.service.AgentAiService;
 import com.agentflow.backend.ai.trace.AgentToolTraceRecorder;
+import com.agentflow.backend.approval.model.AgentApproval;
+import com.agentflow.backend.approval.model.AgentApprovalStatus;
+import com.agentflow.backend.approval.service.AgentApprovalService;
+import com.agentflow.backend.approval.service.MockWriteService;
 import com.agentflow.backend.run.mapper.AgentRunMapper;
 import com.agentflow.backend.run.messaging.AgentRunExecutionProducer;
 import com.agentflow.backend.run.model.AgentRun;
@@ -32,15 +36,19 @@ public class AgentRunService {
 	private final AgentRunExecutionProducer agentRunExecutionProducer;
 	private final AgentStepService agentStepService;
 	private final AgentAiService agentAiService;
+	private final AgentApprovalService approvalService;
+	private final MockWriteService mockWriteService;
 
 	public AgentRunService(AgentTaskMapper agentTaskMapper, AgentRunMapper agentRunMapper,
 			AgentRunExecutionProducer agentRunExecutionProducer, AgentStepService agentStepService,
-			AgentAiService agentAiService) {
+			AgentAiService agentAiService, AgentApprovalService approvalService, MockWriteService mockWriteService) {
 		this.agentTaskMapper = agentTaskMapper;
 		this.agentRunMapper = agentRunMapper;
 		this.agentRunExecutionProducer = agentRunExecutionProducer;
 		this.agentStepService = agentStepService;
 		this.agentAiService = agentAiService;
+		this.approvalService = approvalService;
+		this.mockWriteService = mockWriteService;
 	}
 
 	public AgentRun requestRun(Long taskId) {
@@ -99,6 +107,11 @@ public class AgentRunService {
 			return;
 		}
 
+		if (run.getStatus() == AgentRunStatus.WAITING_APPROVAL) {
+			resumeApprovedRun(runId);
+			return;
+		}
+
 		if (run.getStatus() != AgentRunStatus.QUEUED) {
 			logger.warn("Ignoring agent run execution message for run {} with unexpected status {}", runId,
 					run.getStatus());
@@ -117,6 +130,7 @@ public class AgentRunService {
 		}
 
 		AgentStep currentStep = null;
+		AgentToolTraceRecorder traceRecorder = new AgentToolTraceRecorder(runId, agentStepService, 3);
 		try {
 			AgentTask task = agentTaskMapper.selectById(run.getTaskId());
 
@@ -133,8 +147,14 @@ public class AgentRunService {
 			agentStepService.completeStep(currentStep.getId(), "Prepare LLM execution");
 
 			currentStep = agentStepService.startStep(runId, 2, "EXECUTE", task.getTitle());
-			AgentToolTraceRecorder traceRecorder = new AgentToolTraceRecorder(runId, agentStepService, 3);
 			AgentAiExecutionResult executionResult = agentAiService.execute(task.getTitle(), traceRecorder);
+			if (traceRecorder.approvalPrepared()) {
+				logger.info("Run {} paused for user approval; Consumer is returning", runId);
+				return;
+			}
+			if (agentAiService.requiresMockApproval(task.getTitle())) {
+				throw new IllegalStateException("Mock publication requires approval preparation");
+			}
 			String resultText = executionResult.resultText();
 			if (resultText == null || resultText.isBlank()) {
 				throw new IllegalStateException("LLM returned an empty response");
@@ -155,6 +175,10 @@ public class AgentRunService {
 			}
 			finishRun(runId, AgentRunStatus.FAILED, errorMessage);
 		} catch (RuntimeException exception) {
+			if (traceRecorder.approvalPrepared()) {
+				logger.info("Run {} paused for user approval after tool preparation", runId);
+				return;
+			}
 			String errorMessage = describeAiFailure(exception);
 			logger.warn("LLM execution failed for agent run {}: {}", runId,
 					exception.getClass().getSimpleName());
@@ -162,6 +186,51 @@ public class AgentRunService {
 				agentStepService.failStep(currentStep.getId(), errorMessage);
 			}
 			finishRun(runId, AgentRunStatus.FAILED, errorMessage);
+		}
+	}
+
+	private void resumeApprovedRun(Long runId) {
+		List<AgentApproval> approvals = approvalService.getApprovalsForRun(runId);
+		if (approvals.isEmpty() || approvals.get(0).getStatus() != AgentApprovalStatus.APPROVED) {
+			logger.info("Ignoring resume message for run {} without an approved action", runId);
+			return;
+		}
+		AgentApproval approval = approvals.get(0);
+		int claimed = agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
+				.eq(AgentRun::getRunId, runId)
+				.eq(AgentRun::getStatus, AgentRunStatus.WAITING_APPROVAL)
+				.set(AgentRun::getStatus, AgentRunStatus.RUNNING));
+		if (claimed != 1) {
+			logger.info("Duplicate resume message for run {} was ignored", runId);
+			return;
+		}
+
+		AgentStep currentStep = null;
+		try {
+			AgentStep approvalStep = agentStepService.getStepsForRun(runId).stream()
+					.filter(step -> step.getId().equals(approval.getStepId()))
+					.findFirst()
+					.orElseThrow(() -> new IllegalStateException("Approval step does not exist"));
+			AgentStep executeStep = agentStepService.getStepsForRun(runId).stream()
+					.filter(step -> "EXECUTE".equals(step.getStepType()))
+					.findFirst()
+					.orElseThrow(() -> new IllegalStateException("EXECUTE step does not exist"));
+			agentStepService.completeWaitingStep(approvalStep.getId(), "Approved by user");
+			agentStepService.completeWaitingStep(executeStep.getId(), "Approved action prepared");
+			currentStep = agentStepService.startStep(runId, approvalStep.getStepOrder() + 1,
+					"WRITE ACTION", approval.getActionSummary());
+			String result = mockWriteService.executeApprovedAction(approval.getId(), runId);
+			agentStepService.completeStep(currentStep.getId(), "Mock publication completed on demo platform");
+			currentStep = agentStepService.startStep(runId, approvalStep.getStepOrder() + 2,
+					"FINALIZE", "Persist approved action result");
+			agentStepService.completeStep(currentStep.getId(), "Approved action result saved");
+			finishRun(runId, AgentRunStatus.COMPLETED, null, result);
+		} catch (RuntimeException exception) {
+			logger.warn("Approved action failed for run {}: {}", runId, exception.getClass().getSimpleName());
+			if (currentStep != null) {
+				agentStepService.failStep(currentStep.getId(), "Approved action failed");
+			}
+			finishRun(runId, AgentRunStatus.FAILED, "Approved action failed");
 		}
 	}
 
@@ -252,6 +321,9 @@ public class AgentRunService {
 		}
 		if (message.contains("empty response")) {
 			return "LLM returned an empty response";
+		}
+		if (message.contains("approval preparation")) {
+			return "Mock publication requires user approval";
 		}
 		return "LLM request failed";
 	}
